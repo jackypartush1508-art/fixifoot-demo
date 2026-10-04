@@ -11,7 +11,7 @@ import { loadEngraver, engraverReady, planText, engraveBodies, cleanText, measur
 import { buildFoot, buildProduct, buildPrintableSole, printableRows, drawFootprint, adaptTemplate, wrapFoot, heatColor } from './geometry.js';
 import { OPENING_PRESETS, HOLE_DIAMETERS, defaultAllow } from './openings.js';
 import { buildTwoMaterial, bodiesToPrint, build3MF, zipStore } from './multi.js';
-import { Cloud, initCloud, pingCloud, updateOrderPaymentCloud, updateOrderStatusCloud, scanSig, signedUrl, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole } from './cloud.js';
+import { Cloud, initCloud, pingCloud, updateOrderPaymentCloud, updateOrderStatusCloud, scanSig, signedUrl, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole, upsertVisitCloud, deleteVisitCloud } from './cloud.js';
 import { buildFittingPdf } from './receipt.js';
 import { PAY_METHODS, bizSettings, saveBizSettings, bizConfigured, buildReceiptPdf, downloadBlob, shareBlob, printBlob } from './receipt.js';
 import { measureFoot, prescribe, applyCorrections, rearfootFromMesh } from './orthotic.js';
