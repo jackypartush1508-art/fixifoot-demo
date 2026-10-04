@@ -209,7 +209,7 @@ function topHeight(u, sn, p, kind, hw, integrate) {
   z -= smooth(.84, 1, Math.abs(sn)) * (M ? M.rim * 1.3 : p.noHardEdges ? 1.6 : 0.7) * (kind === 'insole' ? 1 : 0.6);
   if (M?.length === '3/4') { const uf = p._uMax || .78; z -= 0.6 * smooth(uf - .04, uf, u); }
   else if (kind === 'insole') z -= 1.2 * smooth(.9, 1, u) + 0.8 * smooth(.1, 0, u);
-  if (M) z = Math.max(z, 1.2);
+  if (M) z = Math.max(z, M.minTotal || 1.2); // v8.1: 2-layer models keep >= 2.4 mm total (each layer >= 1.2 mm), raised locally at the toe tip / edge
   return z;
 }
 function bottomHeight(u, p, kind) {

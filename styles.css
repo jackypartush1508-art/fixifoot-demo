@@ -293,3 +293,8 @@ body.staff .mode-banner button.primary{background:#5cc2ff;color:#082a4f}
 .product img.p-illus{height:auto;aspect-ratio:16/9;padding:0}
 .illus-cap{font-size:11px;color:#5d6b75;background:#f3f8fd;padding:4px 12px;border-bottom:1px solid #e3edf5}
 .print-prev{margin:8px 0 0}.print-prev img{width:100%;border-radius:12px;display:block}
+/* v8.1 – secondary/detail illustration thumbnail on a product card (click to swap) */
+.product{position:relative}
+.product .p-detail{position:absolute;top:10px;right:10px;width:112px;padding:0;border:2px solid #fff;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 4px 14px rgba(0,30,80,.28);cursor:zoom-in;display:block}
+.product .p-detail img{width:100%;height:auto;aspect-ratio:16/9;object-fit:cover;display:block}
+.product .p-detail span{display:block;font-size:9.5px;font-weight:600;color:#0b3a6e;padding:2px 4px;line-height:1.2;text-align:center}
