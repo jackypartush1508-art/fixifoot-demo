@@ -231,11 +231,11 @@
       <div class="row-between"><span>Price <span class="tag warn hidden" id="priceTag">estimate</span></span><b id="priceTotal">₱–</b></div>
       <div id="priceLines" class="tiny muted"></div>
     </div>
-    <div class="card staff-only" id="payCard"><h3>💳 Payment (staff)</h3>
-      <label class="field">Payment method<select id="payMethod"><option value="">Not yet paid / choose later</option></select></label>
+    <div class="card staff-only" id="payCard"><h3>💳 Scan payment (staff)</h3><p class="tiny muted">Saved on today's scan visit (customer card → Scan visits). Can be changed later.</p>
+      <label class="field">Amount (₱)<input id="payAmount" type="number" min="0" step="1" inputmode="decimal" placeholder="e.g. 1500"></label>
       <label class="switch"><input type="checkbox" id="payPaid"> Paid</label>
-      <label class="field">Discount (₱, optional)<input id="payDiscount" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
-      <label class="field">Notes (on the receipt)<input id="payNotes" maxlength="200" placeholder="e.g. ready for fitting in 7 days"></label>
+      <label class="field">Payment method<select id="payMethod"><option value="">Choose later</option></select></label>
+      <input type="hidden" id="payDiscount" value=""><input type="hidden" id="payNotes" value="">
     </div>
     <div class="bottom-actions">
       <button class="btn primary big" id="orderBtn">Place my order</button>
@@ -265,6 +265,7 @@
             </div>
             <p class="tiny muted" id="dlNote">STL: mm, watertight, Z-up. Parametric = flat bottom on Z=0.</p>
           </div>
+          <div class="card" id="fitCard"><div class="row-between"><h3 style="margin:0">🩺 Fitting report – orthotist engine</h3><span class="badge-approx hidden" id="fitApprox">APPROX</span></div><div id="fitBody"></div></div>
           <div class="card hidden" id="dualCard"><h3>🎨 2-material print (dual extrusion)</h3>
             <label class="switch"><input type="checkbox" id="twoMatChk" checked> 2-material view (both bodies in their colours)</label>
             <div class="staff-dl">
@@ -368,9 +369,9 @@
 
   <!-- CRM (v11: customers, order pipeline, reminders, reports, export) -->
   <section class="screen" id="s-crm">
-    <div class="row-between"><h2>Customers &amp; orders</h2><span class="tag" id="crmTag">On this device</span></div>
+    <div class="row-between"><h2>Customers &amp; scans</h2><span class="tag" id="crmTag">On this device</span></div>
     <div id="crmCloud"></div>
-    <div class="crm-tabs" id="crmTabs"><button data-t="customers" class="on">👥 Customers</button><button data-t="orders">📦 Orders</button><button data-t="reminders">⏰ Reminders <b id="remBadge"></b></button><button data-t="reports">📊 Reports</button><button data-t="export">⬇ Export</button></div>
+    <div class="crm-tabs" id="crmTabs"><button data-t="customers" class="on">👥 Customers</button><button data-t="reminders">⏰ Reminders <b id="remBadge"></b></button><button data-t="export">⬇ Export</button><button data-t="orders" class="secondary">📦 Orders</button></div>
     <div id="crmFilters" class="crm-filters">
       <input class="search" id="crmSearch" type="search" placeholder="Search name, phone or order no.">
       <details id="crmMore"><summary class="tiny"><b>Filters</b> <span id="crmFilterInfo" class="muted"></span></summary>
@@ -390,9 +391,8 @@
       <div id="ordBoard" class="kanban"></div><div id="ordList" class="hidden"></div>
     </div>
     <div class="crm-panel hidden" data-p="reminders"><div id="remList"></div></div>
-    <div class="crm-panel hidden" data-p="reports"><div id="repBody"></div></div>
-    <div class="crm-panel hidden" data-p="export"><div class="card"><h3>Export</h3><p class="tiny muted">Exports follow the search and filters above (customers tab and orders tab use the same filters). CSV opens in Excel and Google Sheets; the Excel file has two sheets.</p>
-      <div class="staff-dl"><button class="btn ghost big" id="expCustCsv">⬇ Customers (CSV)</button><button class="btn ghost big" id="expOrdCsv">⬇ Orders (CSV)</button><button class="btn primary big" id="expXlsx">⬇ Excel workbook (.xlsx – customers + orders)</button></div><p class="tiny muted" id="expInfo"></p></div></div>
+    <div class="crm-panel hidden" data-p="export"><div class="card"><h3>Export</h3><p class="tiny muted">Customers and their scan visits (date, time, feet, files, payment amount / status / method). Exports follow the search and filters above. CSV opens in Excel and Google Sheets; the Excel file has two sheets.</p>
+      <div class="staff-dl"><button class="btn ghost big" id="expCustCsv">⬇ Customers (CSV)</button><button class="btn ghost big" id="expScanCsv">⬇ Scan visits (CSV)</button><button class="btn primary big" id="expXlsx">⬇ Excel workbook (.xlsx – customers + scans)</button></div><p class="tiny muted" id="expInfo"></p></div></div>
     <div class="bottom-actions"><button class="btn ghost" data-go="s-staff">← Back to dashboard</button></div>
   </section>
 

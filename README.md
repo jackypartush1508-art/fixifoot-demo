@@ -380,3 +380,32 @@ RLS is unchanged: staff read/insert/update, admins delete, and anonymous users h
 
   RLS is unchanged.
 - Screenshots: `screenshots/v11.1-*.png`.
+
+## v11.2 (Oct 2026) – scan-centred CRM (no sales screens)
+The staff CRM is now about **customers and their scans**, not sales.
+- **Removed:** the Reports tab (revenue, sales counts, charts), money on the order board and list, order prices and receipts in the customer card, and revenue columns in exports.
+- **Customer card → Scan visits** (newest first). Each visit shows:
+  - **date & time** (Philippine time), stamped automatically when a scan is uploaded or taken
+  - foot (**Right / Left / Both**)
+  - the **scan file(s)**
+  - a **payment** row (amount ₱, **Paid / Unpaid**, method **Cash / GCash / Card / Bank transfer**) that staff can edit in place and that saves immediately
+
+  Each visit also has View 3D (per foot), ✏ Edit (date/time, payment, notes; admins can delete) and 🧾 a receipt for that visit.
+- **＋ New scan visit** on an existing customer: upload one or both feet (optional) with date/time, payment and notes. The customer's feet are updated, and any scan-pending order is rebuilt from the new scan.
+- **Staff order screen:** "Scan payment" (amount / paid / method) is saved on that day's auto-stamped scan visit.
+- **Orders** remain as a secondary tab (status pipeline only, no money). Reminders and Needs scan are unchanged.
+- **Export:** customers CSV, **scan visits CSV** (date, time, feet, files, payment amount / status / method, notes), and Excel with *Customers* + *Scans* sheets. Sample: `samples/v11.2-crm-scans-export-sample.xlsx`.
+- **Database:** migration `20261004210000_scan_visits.sql` adds table `scan_visits`:
+  - `scanned_at`, `feet`, `details` jsonb (files, sources, lengths, scan ids)
+  - `payment_amount`, `payment_status`, `payment_method`, `notes`
+  - RLS: staff read/insert/update, admins delete, anonymous users have no access
+
+  When not signed in, visits are kept in local storage. Scans saved before v11.2 appear as visits grouped by time; their payment can be filled in, which saves them as real visits.
+
+## v12 – Orthotist engine (fitting the insole to the scan)
+- New step between scan analysis and export (`orthotic.js`). It measures each foot: arch height / arch height index, arch type, rearfoot valgus/varus from the 3D heel, ball and heel width, met-head line, toe length, L/R difference, and contact (pressure) zones. It then applies prescription rules: arch support scaled to the measured arch, heel-cup depth, medial or lateral rearfoot posting in degrees, a metatarsal pad behind the met heads, forefoot/hallux relief, a capped heel lift for leg-length difference, diabetic offloading and children's limits.
+- The rules and their sources are in **ORTHOTIC_RULES.md**. **They must be reviewed by a licensed orthotist / podiatrist.**
+- Corrections apply per foot to the insole and flip-flop/slide geometry. The 2-material 3MF is unchanged.
+- Staff dashboard → **🩺 Fitting report**. It shows the measurements and each correction with its value and a plain-English reason. Every value can be overridden before export (overrides are saved with the customer), with a reset button. The **Fitting report PDF** includes a reviewer signature line. The spec JSON carries the fitting report.
+- Orders without a scan use conservative defaults and are marked **APPROX**.
+- Screenshots: `screenshots/v12-*.png`.

@@ -101,6 +101,57 @@ export async function buildReceiptPdf(d) {
   const blob = doc.output('blob');
   return { blob, name: `Fixifoot-receipt-${d.receiptNo}.pdf`, total, subtotal: sub, discount: disc, official };
 }
+/**
+ * v12 orthotist fitting report. d = { customer: {name, phone}, date, product, staffName, logo, logoAspect, feet: [{ side, approx, measurements: [[k,v]], corrections: [{label, value, rx, overridden, reason}], notes: [] }], disclaimer }
+ */
+export async function buildFittingPdf(d) {
+  const jsPDF = await loadLib(), F = (await import('./vendor/fonts/receipt-fonts.js')).default;
+  const doc = new jsPDF({ unit: 'mm', format: 'a4', compress: true });
+  doc.addFileToVFS('fx-r.ttf', F.regular); doc.addFont('fx-r.ttf', 'FX', 'normal');
+  doc.addFileToVFS('fx-b.ttf', F.bold); doc.addFont('fx-b.ttf', 'FX', 'bold');
+  const W = 210, M = 14, R = W - M, blue = [0, 153, 255], ink = [22, 35, 39], grey = [110, 120, 128], red = [192, 57, 43];
+  const font = (st = 'normal', size = 10, col = ink) => { doc.setFont('FX', st); doc.setFontSize(size); doc.setTextColor(...col); };
+  let y = 14, page = 1;
+  const footer = () => { const fy = 286; doc.setDrawColor(226, 233, 241); doc.setLineWidth(0.3); doc.line(M, fy - 5, R, fy - 5);
+    font('bold', 7.8, red); doc.text('Starting prescription generated from the scan – must be reviewed and signed off by a licensed orthotist / podiatrist.', M, fy);
+    font('normal', 7.4, grey); doc.text(`Fixifoot fitting report · page ${page}`, R, fy + 4, { align: 'right' }); doc.text('Comfort product, not a medical device.', M, fy + 4); };
+  const need = h => { if (y + h > 274) { footer(); doc.addPage(); page++; y = 16; } };
+  if (d.logo) { const h = 12, w = h * (d.logoAspect || 640 / 184); try { doc.addImage(d.logo, 'PNG', M, y, w, h); } catch { } }
+  font('bold', 15); doc.text('Fitting report', R, y + 5, { align: 'right' });
+  font('normal', 8.5, grey); doc.text('Orthotist engine v12 · Fixifoot Philippines', R, y + 10, { align: 'right' });
+  y += 17; doc.setDrawColor(...blue); doc.setLineWidth(0.8); doc.line(M, y, R, y); y += 7;
+  const meta = [['Customer', d.customer?.name || '–'], ['Mobile', d.customer?.phone || '–'], ['Date', manilaTime(d.date)], ['Product', d.product || '–'], ['Staff', d.staffName || '–']];
+  meta.forEach(([k, v]) => { font('normal', 9, grey); doc.text(k, M, y); font('bold', 9.5); doc.text(String(v), M + 24, y); y += 5; });
+  y += 2;
+  for (const f of d.feet || []) {
+    need(30);
+    doc.setFillColor(...ink); doc.rect(M, y - 5, R - M, 7.5, 'F'); font('bold', 11, [255, 255, 255]); doc.text(f.side + ' foot', M + 3, y);
+    if (f.approx) { font('bold', 9.5, [255, 210, 80]); doc.text('APPROX – built from measurements, no 3D scan', R - 3, y, { align: 'right' }); }
+    y += 8; font('bold', 10); doc.text('Measurements', M, y); y += 5;
+    for (const [k, v] of f.measurements) { need(5); font('normal', 8.8, grey); doc.text(k, M + 2, y); font('normal', 9); const t = doc.splitTextToSize(String(v), R - M - 62); doc.text(t, M + 58, y); y += Math.max(1, t.length) * 4.3; }
+    y += 3; need(14); font('bold', 10); doc.text('Corrections', M, y); y += 4;
+    doc.setFillColor(236, 242, 248); doc.rect(M, y - 3.6, R - M, 6, 'F'); font('bold', 8.6);
+    doc.text('Correction', M + 2, y); doc.text('Value', M + 60, y); doc.text('Reason', M + 86, y); y += 6;
+    for (const c of f.corrections) {
+      const t = doc.splitTextToSize(c.reason, R - M - 88); need(t.length * 3.9 + 4);
+      font('bold', 8.8); doc.text(doc.splitTextToSize(c.label, 56), M + 2, y);
+      font('bold', 9, c.overridden ? [180, 90, 0] : ink); doc.text(String(c.value), M + 60, y);
+      if (c.overridden) { font('normal', 7.2, [180, 90, 0]); doc.text(`staff (Rx ${c.rx})`, M + 60, y + 3.6); }
+      font('normal', 8.2); doc.text(t, M + 86, y); y += Math.max(t.length * 3.9, c.overridden ? 7 : 4) + 2.2;
+      doc.setDrawColor(226, 233, 241); doc.setLineWidth(0.2); doc.line(M, y - 1.6, R, y - 1.6); y += 1.4;
+    }
+    if (f.notes?.length) { y += 1; for (const n of f.notes) { const t = doc.splitTextToSize('•  ' + n, R - M - 4); need(t.length * 4 + 1); font('normal', 8.4, grey); doc.text(t, M + 2, y); y += t.length * 4 + 1; } }
+    y += 5;
+  }
+  const dl = doc.splitTextToSize(d.disclaimer || '', R - M - 8); need(dl.length * 4.2 + 24);
+  doc.setFillColor(255, 244, 236); doc.roundedRect(M, y - 5, R - M, dl.length * 4.2 + 12, 2, 2, 'F');
+  font('bold', 9.5, red); doc.text('Clinical review required', M + 4, y); y += 5; font('normal', 8.4); doc.text(dl, M + 4, y); y += dl.length * 4.2 + 8;
+  font('normal', 9, grey); doc.text('Reviewed by (orthotist / podiatrist): ______________________   Licence no.: __________   Date: __________', M, y);
+  footer();
+  doc.setProperties({ title: 'Fixifoot fitting report ' + (d.customer?.name || ''), subject: 'Orthotic fitting report', author: 'Fixifoot Philippines', creator: 'Fixifoot app' });
+  const safe = String(d.customer?.name || 'customer').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'customer';
+  return { blob: doc.output('blob'), name: `Fixifoot-fitting-report-${safe}.pdf` };
+}
 export function downloadBlob(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); }
 export async function shareBlob(blob, name, title) {
   const file = new File([blob], name, { type: 'application/pdf' });

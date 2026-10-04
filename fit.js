@@ -295,6 +295,7 @@ function mods(md, p, u, sn, hw) {
   let z = 0; const rad = Math.PI / 180, L = md.L;
   const heelFade = 1 - smooth(.25, .42, u);
   z += p.heelLift * (1 - smooth(.28, .55, u));
+  if (p.archBoost) z += p.archBoost * gauss(u, md.archU, .1) * smooth(-0.2, 0.6, sn); // v12 orthotist: extra medial arch support
   z += Math.tan(p.medialPost * rad) * hw * (sn + 1) * 0.5 * heelFade;
   z += Math.tan(p.medialHeelSkive * rad) * hw * Math.max(0, sn) * heelFade * 0.6;
   z += Math.tan(p.lateralWedge * rad) * hw * (1 - sn) * 0.5 * (1 - smooth(.75, .95, u));
@@ -319,7 +320,8 @@ export function modZoneTest(md, p) {
   if (p.lateralWedge) tests.push(['Lateral wedge', (u, sn) => sn < .2]);
   if ((p.archFill ?? 100) < 100) tests.push([`Arch fill ${p.archFill}%`, (u, sn) => Math.abs(u - .41) < .2 && sn > -.1]);
   tests.push(['Smooth forefoot (no toe ridges)', u => u > md.ballU - 4 / L]);
-  if (p._model && p.heelCupDepth > 14) tests.push([`Deep heel cup ${p.heelCupDepth} mm (model)`, u => u < .14]);
+  if (p.heelCupDepth > 14) tests.push([`Deep heel cup ${p.heelCupDepth} mm`, u => u < .14]);
+  if (p.archBoost) tests.push([`Arch support +${p.archBoost} mm (orthotist)`, (u, sn) => Math.abs(u - md.archU) < .2 && sn > -.2]);
   if (p._model?.archBoost) tests.push([`Arch support +${p._model.archBoost} mm (model)`, (u, sn) => Math.abs(u - md.archU) < .2 && sn > -.2]);
   if (p.toeCrest) tests.push(['Toe crest', u => Math.abs(u - (md.sulcusU - .012)) < .05]);
   if (p.mortonExtension) tests.push(["Morton's extension", (u, sn) => u > md.ballU - .06 && sn > .2]);

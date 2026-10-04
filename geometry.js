@@ -219,6 +219,7 @@ function topHeight(u, sn, p, kind, hw, integrate) {
   if (p.mortonExtension) z += 1.5 * smooth(.66, .7, u) * smooth(.25, .45, sn);
   if (p.toeCrest) z += k * 4 * gauss(u, .825, .022) * (1 - smooth(.45, .8, Math.abs(sn + .08)));
   if (M?.archBoost) z += k * M.archBoost * gauss(u, .41, .1) * smooth(-0.2, 0.8, sn);
+  if (p.archBoost) z += k * p.archBoost * gauss(u, .41, .1) * smooth(-0.2, 0.6, sn); // v12 orthotist arch support
   let dep = 0;
   for (const r of M?.recesses || []) { const e = r.at === 'met' ? [.725, 0, .045, .72] : r.at === 'hallux' ? [.85, .5, .045, .32] : [.12, 0, .07, .45]; z -= r.depth * (1 - smooth(.55, 1, Math.hypot((u - e[0]) / e[2], (sn - e[1]) / e[3]))); }
   if (p.heelCutout || p.offloadPockets) dep = Math.max(dep, 1.5 * ellIn(u, sn, .12, 0, .06, .38));

@@ -12,7 +12,9 @@ import { buildFoot, buildProduct, buildPrintableSole, printableRows, drawFootpri
 import { OPENING_PRESETS, HOLE_DIAMETERS, defaultAllow } from './openings.js';
 import { buildTwoMaterial, bodiesToPrint, build3MF, zipStore } from './multi.js';
 import { Cloud, initCloud, pingCloud, updateOrderPaymentCloud, updateOrderStatusCloud, scanSig, signedUrl, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole } from './cloud.js';
+import { buildFittingPdf } from './receipt.js';
 import { PAY_METHODS, bizSettings, saveBizSettings, bizConfigured, buildReceiptPdf, downloadBlob, shareBlob, printBlob } from './receipt.js';
+import { measureFoot, prescribe, applyCorrections, rearfootFromMesh } from './orthotic.js';
 import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, buildContactSole, morphTemplate, toPrintable, fitCheck, colorByGap, drawFitMap, ALLOW } from './fit.js';
 
 const R = window.FixiRules;
@@ -22,7 +24,7 @@ const SCREENS = ['s-welcome', 's-catalog', 's-design', 's-summary', 's-scan', 's
 const peso = n => '₱' + n.toLocaleString('en-PH');
 
 const state = {
-  side: 'R', feet: {}, archOverride: {}, uploaded: {},
+  side: 'R', feet: {}, archOverride: {}, fitOver: {}, uploaded: {},
   answers: { diabetes: 'no', heelPain: 'no', jointPain: 'no', standing: '0-4', activity: 'moderate', weight: '60-90', lldMm: 5, lldSide: 'left' },
   conditions: new Set(), sources: {}, qa: {}, qIndex: 0, staffAdds: new Set(), staffRemoves: new Set(), staff: sessionStorage.getItem('fxStaff') === '1' && !(window.FIXI_CLOUD?.url && window.FIXI_CLOUD?.anonKey),
   sizeMode: 'scan', base: '', product: null, color: null, strapColor: null, integrate: true, showZones: true, highlight: null,
@@ -290,7 +292,8 @@ function applyAligned(res, name, raw) {
   state.rawScans[side] = { geo: raw, name, info: res.info };
   state.feet[side] = { side, source: 'file', file: name, archType, length: Math.round(md.L), width: Math.round(md.W), heelWidth: Math.round(md.heelW), csi: md.csi, ahi: { high: .37, normal: .34, low: .315, flat: .29 }[archType], peakForefootPressure: 0.8, triangles: res.info.triangles,
     units: res.info.units, archHeightMm: md.archH, map: encodeGrid(md.grid), mapId: Date.now() + Math.random(), align: { ...res.info } };
-  delete state.archOverride[side]; delete modelCache[side];
+  const rf = rearfootFromMesh(res.geo, md); if (rf != null) state.feet[side].rearfootDeg = rf; // v12 orthotist: heel valgus/varus from the 3D heel
+  delete state.archOverride[side]; delete modelCache[side]; if (state.fitOver) delete state.fitOver[side];
   return side;
 }
 function realign(side, nudge) {
@@ -497,8 +500,9 @@ function renderFeetSummary(spec) {
 }
 function currentSpec(side = state.side) {
   const ans = { ...state.answers };
-  if (state.conditions.has('leg_length') && ans.lldSide && ans.lldSide[0].toUpperCase() !== side) ans.lldMm = 0; // lift only on the shorter leg
+  ans.lldMm = 0; // v12: the orthotist engine prescribes the heel lift (shorter leg only, capped) – see fittingFor()
   const res = R.combine(archOf(side), [...state.conditions], ans);
+  const condLift = res.params.heelLift || 0; // lift from other problems (e.g. Achilles), not leg length
   const pr = state.product;
   if (pr?.model) { // v7 insole line: the chosen model sets its own clinical params (thickness profile, cup, edges, pads, material)
     const keep = { metPad: res.params.metPad };
@@ -512,9 +516,93 @@ function currentSpec(side = state.side) {
     res.notes.push(`Model ${pr.name}: ${pr.model.summary}. Smooth toe area (v6.1), no ridges between the toes.`);
   }
   if (state.archFill != null) res.params.archFill = state.archFill;
+  // v12 orthotist engine: measurements -> per-foot prescription -> params (staff overrides win)
+  const fit = fittingFor(side);
+  if (fit) {
+    const over = state.fitOver?.[side] || {}, archFill0 = res.params.archFill ?? 100;
+    applyCorrections(res.params, fit.corrections, over);
+    if (over.archFill == null) res.params.archFill = Math.min(archFill0, res.params.archFill ?? 100); // model / staff slider can lower it further
+    if (over.heelLift == null) res.params.heelLift = Math.max(condLift, res.params.heelLift);
+    const mb = pr?.model?.archBoost || 0; if (mb && over.archBoost == null) res.params.archBoost = Math.max(0, +(res.params.archBoost - mb).toFixed(1)); // the model already adds its own arch
+    res.fitting = { ...fit, over, applied: { archBoost: res.params.archBoost, archFill: res.params.archFill, heelCupDepth: res.params.heelCupDepth, medialPost: res.params.medialPost, lateralWedge: res.params.lateralWedge, metPad: !!res.params.metPad, heelLift: res.params.heelLift, offloadPockets: !!res.params.offloadPockets, firstMTPRelief: !!res.params.firstMTPRelief }, modelArch: mb };
+    res.notes.unshift(`Orthotist engine${fit.measurements.approx ? ' (APPROX – no scan)' : ''}: ${fit.corrections.filter(c => (over[c.id] ?? c.value)).map(c => c.label + ' ' + fmtCorr(c, over[c.id] ?? c.value)).join(', ') || 'no corrections'} – starting prescription, to be reviewed by a licensed orthotist / podiatrist.`);
+  }
   const md = scanModel(side);
   if (md) { res.totalContact = true; res.scanArchH = md.archH; res.notes.unshift(`Total contact: top surface = scanned plantar surface (2 mm grid, heel → toe sulcus), arch filled ${res.params.archFill ?? 100}%; clinical modifications added on top.`); }
   return res;
+}
+/* ---------------- v12 orthotist engine glue ---------------- */
+const fmtCorr = (c, v) => c.kind === 'bool' ? (v ? 'yes' : 'no') : `${v}${c.unit === '%' ? '%' : c.unit ? ' ' + c.unit : ''}`;
+const ARCH_WORD = { flat: 'Flat', low: 'Low', normal: 'Normal', high: 'High' };
+const FIT_DISCLAIMER = 'These corrections are a starting prescription calculated from the 3D scan (or measurements) using published rules of thumb (see ORTHOTIC_RULES.md). They are not a diagnosis. A licensed orthotist / podiatrist must review and approve them before the device is used, especially for diabetes, children, rigid deformities or pain.';
+function fitMeasureRows(fit) {
+  const m = fit.measurements, ctx = fit.ctx || {}, P = m.pressure, pc = v => Math.round(v * 100) + '%';
+  return [
+    ['Source', (SRC_LABEL[m.source] || m.source || '–') + (m.approx ? ' – APPROX' : '')],
+    ['Foot length', m.lengthMm + ' mm'], ['Ball width / heel width', `${m.ballWidthMm} mm / ${m.heelWidthMm} mm`],
+    ['Arch height (plantar apex)', m.archHeightMm != null ? `${m.archHeightMm} mm · index ${m.archHeightIndex}% of length (typical ≈${m.normalArchMm} mm)${m.approx ? ' – estimated from a typical foot, no scan' : ''}` : 'not measured (no scan)'],
+    ['Chippaux-Smirak index', m.csi != null ? m.csi + '%' : '–'], ['Arch type', (ARCH_WORD[m.archType] || m.archType) + ' – ' + (m.archMethod || '')],
+    ['Rearfoot alignment', `${m.rearfootDeg > 0 ? '+' : ''}${m.rearfootDeg}° ${m.rearfootDeg > 4 ? 'valgus (pronated)' : m.rearfootDeg < -2 ? 'varus (supinated)' : 'neutral range'} – ${m.rearfootMethod}`],
+    ['Met-head line', `${m.metLineMm} mm from the heel`], ['Toe length (met heads to tip)', m.toeLengthMm + ' mm'],
+    ['Left / right length difference', ctx.footDiffMm != null ? ctx.footDiffMm + ' mm' : 'one foot only'],
+    ['Leg-length difference (reported)', ctx.lldMm ? `${ctx.lldMm} mm, shorter: ${ctx.lldSide}` : 'none'],
+    ['Pressure zones (contact share)', P ? `heel ${pc(P.heel)} · midfoot ${pc(P.midfoot)} · met heads ${pc(P.metHeads)} · hallux ${pc(P.hallux)}` : 'not available (no scan map)'],
+    ['Flags', [ctx.diabetic && 'diabetes', ctx.kid && 'child', ctx.kind && ctx.kind !== 'insole' && ctx.kind + ' footbed'].filter(Boolean).join(', ') || '–']
+  ];
+}
+function fitSummary(fit) {
+  if (!fit) return null; const over = fit.over || {};
+  return { approx: !!fit.measurements.approx, measurements: Object.fromEntries(fitMeasureRows(fit)), raw: fit.measurements,
+    corrections: fit.corrections.map(c => ({ id: c.id, label: c.label, unit: c.unit, prescribed: c.value, value: over[c.id] ?? c.value, overridden: over[c.id] != null, reason: c.reason })),
+    applied: fit.applied, notes: fit.notes, review: 'Must be reviewed by a licensed orthotist / podiatrist.' };
+}
+function renderFitReport(side, spec) {
+  const el = $('#fitBody'); if (!el) return;
+  const fit = spec.fitting; if (!fit) { el.innerHTML = '<p class="muted small">No foot data.</p>'; return; }
+  const over = fit.over || {}, m = fit.measurements;
+  $('#fitApprox').classList.toggle('hidden', !m.approx);
+  el.innerHTML = `<p class="tiny muted">${sideName(side)} foot · switch foot above. Change any value to override the prescription before export – the 3D model, STL and 3MF update.</p>
+    <h4 class="crm-h">Measurements</h4><table class="params fit-meas">${fitMeasureRows(fit).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(String(v))}</td></tr>`).join('')}</table>
+    <h4 class="crm-h">Corrections</h4>
+    <div class="fit-corr">${fit.corrections.map(c => { const v = over[c.id] ?? c.value, ov = over[c.id] != null;
+      const inp = c.kind === 'bool' ? `<label class="switch"><input type="checkbox" data-fx="${c.id}" ${v ? 'checked' : ''}> ${v ? 'yes' : 'no'}</label>`
+        : `<input type="number" data-fx="${c.id}" value="${v}" min="${c.min}" max="${c.max}" step="${c.step}" inputmode="decimal"><span class="tiny">${esc(c.unit)}</span>`;
+      return `<div class="fx-row ${ov ? 'ov' : ''} ${(c.kind === 'bool' ? v : +v) ? 'on' : ''}" data-fxrow="${c.id}"><div class="row-between"><b class="small">${esc(c.label)}</b><span class="fx-in">${inp}</span></div>
+        <p class="tiny">${esc(c.reason)}</p>${ov ? `<p class="tiny fx-ov">Staff override · prescribed ${esc(fmtCorr(c, c.value))} <button class="linkbtn tiny" data-fxreset="${c.id}">reset</button></p>` : ''}</div>`; }).join('')}</div>
+    ${fit.modelArch ? `<p class="tiny muted">Model ${esc(state.product?.name || '')} already adds +${fit.modelArch} mm arch – the engine adds only the rest (now +${fit.applied.archBoost} mm).</p>` : ''}
+    ${fit.notes.length ? `<ul class="tiny">${fit.notes.map(n => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+    <div class="alert warn tiny">⚕️ ${esc(FIT_DISCLAIMER)}</div>
+    <div class="staff-top"><button class="btn ghost" id="fitReset" ${Object.keys(over).length ? '' : 'disabled'}>↺ Reset to prescription</button><button class="btn primary" id="fitPdf">⬇ Fitting report (PDF)</button></div>`;
+  const setOv = (id, val) => { const c = fit.corrections.find(x => x.id === id); state.fitOver[side] ||= {};
+    if (c.kind !== 'bool') { val = Math.min(c.max, Math.max(c.min, +val)); if (!isFinite(val)) return; }
+    if (val === c.value || (c.kind === 'bool' && !!val === !!c.value)) delete state.fitOver[side][id]; else state.fitOver[side][id] = val;
+    renderStaff(); };
+  el.querySelectorAll('[data-fx]').forEach(i => i.onchange = () => setOv(i.dataset.fx, i.type === 'checkbox' ? (i.checked ? 1 : 0) : i.value));
+  el.querySelectorAll('[data-fxreset]').forEach(b => b.onclick = () => { delete state.fitOver[side]?.[b.dataset.fxreset]; renderStaff(); });
+  $('#fitReset').onclick = () => { delete state.fitOver[side]; renderStaff(); toast(sideName(side) + ': prescription restored'); };
+  $('#fitPdf').onclick = fittingPdf;
+}
+async function fittingPdf() {
+  const cust = crmAll().find(x => x.id === state.customerId);
+  const feet = ['R', 'L'].filter(s => state.feet[s]).map(s => { const fit = currentSpec(s).fitting; if (!fit) return null; const over = fit.over || {};
+    return { side: sideName(s), approx: fit.measurements.approx, measurements: fitMeasureRows(fit), notes: fit.notes,
+      corrections: fit.corrections.map(c => ({ label: c.label, value: fmtCorr(c, over[c.id] ?? c.value), rx: fmtCorr(c, c.value), overridden: over[c.id] != null, reason: c.reason })) }; }).filter(Boolean);
+  try { const r = await buildFittingPdf({ customer: { name: cust?.name || 'Walk-in customer', phone: cust?.phone }, date: new Date().toISOString(), product: ensureProduct()?.name, staffName: staffName(), feet, disclaimer: FIT_DISCLAIMER, ...logoData() });
+    downloadBlob(r.blob, r.name); toast('Fitting report downloaded'); } catch (e) { toast('Could not create the report: ' + e.message, 4000); }
+}
+function fittingFor(side) {
+  const f = state.feet[side]; if (!f) return null;
+  try {
+    const md = footModel(side), pr = state.product, other = state.feet[side === 'L' ? 'R' : 'L'];
+    const m = measureFoot({ ...f, side }, md, { archOverride: state.archOverride[side] });
+    if (state.archOverride[side]) m.archOverride = true;
+    const ALIGN = ['overpronation', 'pttd', 'supination', 'pes_cavus', 'ankle_instability'];
+    const conds = [...state.conditions].filter(id => !(ALIGN.includes(id) && state.sources?.[id] === 'scan')); // the engine measures alignment itself; only staff / questionnaire alignment problems add posting
+    const ctx = { kind: pr?.kind || 'insole', kid: pr?.id === 'kids', diabetic: conds.includes('diabetic') || state.answers.diabetes === 'yes', conditions: conds,
+      lldMm: conds.includes('leg_length') ? +state.answers.lldMm || 0 : 0, lldSide: state.answers.lldSide, footDiffMm: other ? Math.abs((f.length || 0) - (other.length || 0)) : null };
+    const rx = prescribe(m, ctx);
+    return { measurements: m, corrections: rx.corrections, notes: rx.notes, ctx: { kind: ctx.kind, kid: ctx.kid || m.lengthMm < 215, diabetic: ctx.diabetic, lldMm: ctx.lldMm, lldSide: ctx.lldSide, footDiffMm: ctx.footDiffMm } };
+  } catch (e) { console.warn('orthotist', e); return null; }
 }
 /* ---------------- scan-accurate model (plantar map) ---------------- */
 const modelCache = {};
@@ -706,7 +794,7 @@ function priceLines(spec) {
 }
 function renderOrder() {
   const cur = crmAll().find(x => x.id === state.customerId); if (cur) { $('#custName').value ||= cur.name; $('#custPhone').value ||= cur.phone || ''; $('#custEmail').value ||= cur.email || ''; }
-  const pm = $('#payMethod'); if (pm.options.length < 2) pm.innerHTML += PAY_METHODS.map(m => `<option>${m}</option>`).join('');
+  const pm = $('#payMethod'); if (pm.options.length < 2) pm.innerHTML += VISIT_METHODS.map(m => `<option>${m}</option>`).join('');
   const p = state.product, f = mainFoot(), spec = currentSpec(), sz = sizeFromLength(productDims(longestFoot().side).footL), dims = productDims(f.side);
   const condNames = spec.conditions.map(id => R.CONDITIONS.find(c => c.id === id).name);
   $('#summaryCard').innerHTML = `<div class="row-between" style="margin-bottom:10px"><b>${p.name}</b><span class="sw" style="background:${state.color};width:28px;height:28px"></span></div>
@@ -759,7 +847,7 @@ function buildStl(side, id) {
 }
 function buildSpec(id, stlInfos = []) {
   const p = ensureProduct(), feet = Object.keys(state.feet);
-  const perFoot = feet.map(s => { const sp = currentSpec(s); return { side: sideName(s), scan: { ...state.feet[s], map: state.feet[s].map ? `${state.feet[s].map.nx}×${state.feet[s].map.nz} plantar height map @ ${state.feet[s].map.res} mm (stored)` : null, plantar: undefined }, totalContact: !!sp.totalContact, archType: sp.archType, params: sp.params, clinicalRationale: R.rationale(sp, { totalContact: sp.totalContact, scanArchH: sp.scanArchH }).map(r => ({ title: r.title, value: r.value, why: r.why, sources: r.refs.map(x => x.url) })), zones: sp.zones.map(z => ({ id: z.id, label: z.label, reasons: z.reasons })), notes: sp.notes, conflicts: sp.conflicts }; });
+  const perFoot = feet.map(s => { const sp = currentSpec(s); return { side: sideName(s), fitting: fitSummary(sp.fitting), scan: { ...state.feet[s], map: state.feet[s].map ? `${state.feet[s].map.nx}×${state.feet[s].map.nz} plantar height map @ ${state.feet[s].map.res} mm (stored)` : null, plantar: undefined }, totalContact: !!sp.totalContact, archType: sp.archType, params: sp.params, clinicalRationale: R.rationale(sp, { totalContact: sp.totalContact, scanArchH: sp.scanArchH }).map(r => ({ title: r.title, value: r.value, why: r.why, sources: r.refs.map(x => x.url) })), zones: sp.zones.map(z => ({ id: z.id, label: z.label, reasons: z.reasons })), notes: sp.notes, conflicts: sp.conflicts }; });
   const spec = currentSpec(), lines = priceLines(spec);
   return { orderId: id, brand: 'Fixifoot Philippines', feetSource: Object.fromEntries(feet.map(s => [sideName(s), SRC_LABEL[state.feet[s].source] || state.feet[s].source])), testData: feet.some(s => ['sample', 'demo'].includes(state.feet[s].source)) || undefined, scanPending: needsScanFeet() || undefined, fitWarning: needsScanFeet() ? 'Approximate fit – scan recommended. Built from measurements (shoe size / foot length), not from a 3D scan.' : undefined, createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && tplKind(p)) ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
     size: sizeFromLength(longestFoot().length), questionnaire: state.answers, questionnaireRaw: state.qa, conditions: spec.conditions, feet: perFoot,
@@ -786,13 +874,15 @@ $('#orderBtn').onclick = () => {
   const name = $('#custName').value.trim(), phone = $('#custPhone').value.trim(), email = $('#custEmail').value.trim();
   if (!name) { toast('Please enter your name'); $('#custName').focus(); return; }
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('Please check your email address'); $('#custEmail').focus(); return; }
-  const id = newOrderId(); saveCurrentCustomer(name, phone, email); recordOrder(id, state.staff ? 'staff' : 'customer', null, [], state.staff ? payFromForm() : null);
+  const id = newOrderId(), cust = saveCurrentCustomer(name, phone, email); recordOrder(id, state.staff ? 'staff' : 'customer', null, [], null);
+  if (state.staff) { const sp = scanPayFromForm(); if (sp.amount != null || sp.status === 'paid' || sp.method) { const v = (cust.visits || []).slice().sort((a, b) => new Date(b.date) - new Date(a.date))[0]; if (v) { v.payment = sp; saveVisit(cust.id, v); } } }
   lastOrder = { customerId: state.customerId, orderId: id }; $('#thanksNo').textContent = 'Order no. ' + id; $('#thanksScan').classList.toggle('hidden', !needsScanFeet());
   $('#thanks').classList.remove('hidden');
   const cf = $('#confetti'); cf.innerHTML = Array.from({ length: 40 }, (_, i) => `<i style="left:${Math.random() * 100}%;background:${['#0099ff', '#ffd22e', '#015ad8', '#5cc2ff', '#162327'][i % 5]};animation-delay:${Math.random() * 0.8}s"></i>`).join('');
 };
 $('#thanksDone').onclick = () => $('#thanks').classList.add('hidden');
 let lastOrder = null;
+function scanPayFromForm() { const a = $('#payAmount').value; return { amount: a === '' ? null : Math.max(0, Math.round(+a * 100) / 100), status: $('#payPaid').checked ? 'paid' : 'unpaid', method: $('#payMethod').value || null }; }
 function payFromForm() { return { method: $('#payMethod').value || null, paid: $('#payPaid').checked, discount: Math.max(0, Math.round(+$('#payDiscount').value || 0)), notes: $('#payNotes').value.trim() || null, staffName: staffName() || null }; }
 $$('#thanksReceipt [data-rc]').forEach(b => b.onclick = () => { const c = lastOrder && crmAll().find(x => x.id === lastOrder.customerId), o = c?.orders?.find(x => x.id === lastOrder.orderId); if (!o) return toast('Order not found'); receiptAction(b.dataset.rc, c, o); });
 $('#restartBtn').onclick = () => { location.reload(); };
@@ -875,6 +965,7 @@ function renderStaff(keepView = true) {
   if (!state.feet[state.side]) state.side = Object.keys(state.feet)[0];
   const side = state.side, f = state.feet[side], spec = currentSpec(side), d = productDims(side);
   $$('#staffSideSeg .seg-btn').forEach(b => { b.classList.toggle('active', b.dataset.s === side); b.onclick = () => { state.side = b.dataset.s; state.highlight = null; renderStaff(); }; });
+  renderFitReport(side, spec);
   // customer
   $('#staffCustomer').innerHTML = `<dl class="summary"><dt>Feet</dt><dd>${['L', 'R'].map(s => state.feet[s] ? `${sideName(s)} ${state.feet[s].length}×${state.feet[s].width} mm (${SRC_LABEL[state.feet[s].source] || state.feet[s].source})` : `${sideName(s)}: not scanned`).join('<br>')}</dd>
     <dt>Size</dt><dd>EU ${sizeFromLength(longestFoot().length).eu}</dd><dt>Diabetes</dt><dd>${state.answers.diabetes}</dd><dt>On feet</dt><dd>${state.answers.standing} h</dd><dt>Activity</dt><dd>${state.answers.activity}</dd><dt>Weight</dt><dd>${state.answers.weight}</dd></dl>`;
@@ -1065,9 +1156,9 @@ const fmtDate = iso => new Date(iso).toLocaleString('en-PH', { dateStyle: 'mediu
 function snapshot() {
   const sp = Object.fromEntries(Object.keys(state.feet).map(s => [s, currentSpec(s)]));
   return {
-    feet: JSON.parse(JSON.stringify(state.feet)), archOverride: { ...state.archOverride }, qa: JSON.parse(JSON.stringify(state.qa)), lld: { mm: state.answers.lldMm, side: state.answers.lldSide },
+    feet: JSON.parse(JSON.stringify(state.feet)), archOverride: { ...state.archOverride }, fitOver: JSON.parse(JSON.stringify(state.fitOver || {})), qa: JSON.parse(JSON.stringify(state.qa)), lld: { mm: state.answers.lldMm, side: state.answers.lldSide },
     staffAdds: [...state.staffAdds], staffRemoves: [...state.staffRemoves], conditions: [...state.conditions],
-    settings: { design: state.design ? JSON.parse(JSON.stringify(state.design)) : null, productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact, openings: { ...state.openings },
+    settings: { fitOver: JSON.parse(JSON.stringify(state.fitOver || {})), design: state.design ? JSON.parse(JSON.stringify(state.design)) : null, productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact, openings: { ...state.openings },
       perFoot: Object.fromEntries(Object.entries(sp).map(([s, x]) => [s, { archType: x.archType, archHeight: x.params.archHeight, heelCupDepth: x.params.heelCupDepth, medialPost: x.params.medialPost, lateralWedge: x.params.lateralWedge, heelLift: x.params.heelLift, metPad: x.params.metPad, shore: x.params.shore }])) }
   };
 }
@@ -1079,9 +1170,12 @@ function saveCurrentCustomer(name, phone, email) {
   Object.assign(c, { name: name || c.name || 'Walk-in customer', phone: phone ?? c.phone ?? '', email: email ?? c.email ?? '', updatedAt: now }, snapshot());
   // v11: keep a dated scan history (one entry per distinct scan)
   c.scanHistory = c.scanHistory || []; c.tags = c.tags || []; c.scanPending = needsScanFeet();
-  for (const [sd, f] of Object.entries(state.feet)) { const sig = scanSig(f); if (!c.scanHistory.some(h => h.sig === sig)) c.scanHistory.push({ sig, side: sd, source: f.source, file: f.file || null, length: f.length, width: f.width, archType: f.archType, csi: f.csi, peakForefootPressure: f.peakForefootPressure, date: now }); }
+  const fresh = [];
+  for (const [sd, f] of Object.entries(state.feet)) { const sig = scanSig(f); if (!c.scanHistory.some(h => h.sig === sig) && c.scanSig?.[sd] !== sig) { fresh.push(sd); c.scanHistory.push({ sig, side: sd, source: f.source, file: f.file || null, length: f.length, width: f.width, archType: f.archType, csi: f.csi, peakForefootPressure: f.peakForefootPressure, date: now }); } }
+  // v11.2: every new scan is auto-stamped as a scan visit (date/time, feet, files) with an empty payment for staff to fill in
+  let visit = null; if (fresh.length) { visit = newVisit(fresh, state.feet, fresh.map(sd => scanSig(state.feet[sd])), now); c.visits = c.visits || []; c.visits.push(visit); }
   state.customerId = c.id; crmSave(list);
-  if (cloudOn()) { const files = rawMeshFiles(); cloudJob('save', () => saveCustomerCloud(c, files)); }
+  if (cloudOn()) { const files = rawMeshFiles(); cloudJob('save', async () => { await saveCustomerCloud(c, files); if (visit) { visit.refs = fresh.map(sd => c.scanIds?.[sd]).filter(Boolean); await upsertVisitCloud(c, visit); } }); }
   return c;
 }
 function recordOrder(id, by, spec = null, stls = [], pay = null) {
@@ -1096,7 +1190,7 @@ function recordOrder(id, by, spec = null, stls = [], pay = null) {
   if (cloudOn()) { const o = c.orders.find(o => o.id === id), sp = spec || buildSpec(id, stls.map(x => x.info)); cloudJob('order', () => saveCustomerCloud(c, rawMeshFiles()).then(() => insertOrderCloud(c, o, sp, stls))); }
 }
 function loadCustomer(c) {
-  state.feet = JSON.parse(JSON.stringify(c.feet || {})); state.uploaded = {}; state.archOverride = { ...(c.archOverride || {}) };
+  state.feet = JSON.parse(JSON.stringify(c.feet || {})); state.uploaded = {}; state.archOverride = { ...(c.archOverride || {}) }; state.fitOver = JSON.parse(JSON.stringify(c.fitOver || c.settings?.fitOver || {}));
   state.qa = JSON.parse(JSON.stringify(c.qa || {})); state.staffAdds = new Set(c.staffAdds || []); state.staffRemoves = new Set(c.staffRemoves || []);
   if (c.lld) { state.answers.lldMm = c.lld.mm; state.answers.lldSide = c.lld.side; }
   const s = c.settings || {}; state.product = R.PRODUCTS.find(x => x.id === s.productId) || null; state.color = s.color || state.product?.colors[0]; state.strapColor = s.strapColor || state.product?.strapColors?.[0];
@@ -1201,14 +1295,13 @@ function renderCRM() {
       const feet = ['R', 'L'].filter(s => c.feet?.[s]).map(s => `${s}: ${R.ARCH_TYPES[c.archOverride?.[s] || c.feet[s].archType]?.short} · ${c.feet[s].length} mm`).join(' &nbsp;|&nbsp; ');
       const last = (c.orders || [])[0];
       return `<div class="crm-item ${c.id === state.customerId ? 'on' : ''}" data-id="${esc(c.id)}"><div class="crm-av">${esc((c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase())}</div>
-        <div class="crm-main"><b>${esc(c.name)}</b><span>${esc(c.phone || 'no phone')} · ${(c.orders || []).length} order(s)${last ? ` · <i class="st st-${ordStatus(last)}">${stLabel(ordStatus(last))}</i>` : ''}${custScanPending(c) ? ' · <i class="st st-pending">📷 Scan pending</i>' : ''}</span><small>${feet || 'no scan'}</small>${(c.tags || []).length ? `<span class="tagrow">${c.tags.map(t => `<i class="ctag ctag-${esc(t.toLowerCase())}">${esc(t)}</i>`).join('')}</span>` : ''}</div><span class="crm-go">›</span></div>`;
+        <div class="crm-main"><b>${esc(c.name)}</b><span>${esc(c.phone || 'no phone')} · ${(c.orders || []).length} order(s)${last ? ` · <i class="st st-${ordStatus(last)}">${stLabel(ordStatus(last))}</i>` : ''}${custScanPending(c) ? ' · <i class="st st-pending">📷 Scan pending</i>' : ''}</span><small>${feet || 'no scan'}</small>${(() => { const v = visitsOf(c)[0]; return v ? `<small class="muted">Last scan ${phtDT(v.date)}${v.payment?.status === 'paid' ? ' · ✅ paid' : v.payment?.amount ? ' · unpaid' : ''}</small>` : ''; })()}${(c.tags || []).length ? `<span class="tagrow">${c.tags.map(t => `<i class="ctag ctag-${esc(t.toLowerCase())}">${esc(t)}</i>`).join('')}</span>` : ''}</div><span class="crm-go">›</span></div>`;
     }).join('') : '<p class="muted center">No customers found.</p>';
     $$('#crmList .crm-item').forEach(el => el.onclick = () => openCustomer(el.dataset.id));
   }
   if (crmTab === 'orders') renderOrders(list, F, where);
   if (crmTab === 'reminders') renderReminders(list);
-  if (crmTab === 'reports') renderReports(list, F);
-  if (crmTab === 'export') { const nc = list.filter(c => custMatch(c, F)).length, no = allOrders(list).filter(({ c, o }) => orderMatch(c, o, F)).length; $('#expInfo').textContent = `Will export ${nc} customer(s) and ${no} order(s) with the current filters.`; }
+  if (crmTab === 'export') { const x = exportRows(list, F); $('#expInfo').textContent = `Will export ${x.cr.length} customer(s) and ${x.sr.length} scan visit(s) with the current filters.`; }
 }
 function renderOrders(list, F, where) {
   const rows = allOrders(list).filter(({ c, o }) => orderMatch(c, o, F));
@@ -1216,14 +1309,14 @@ function renderOrders(list, F, where) {
   $$('#ordView button').forEach(b => b.classList.toggle('active', b.dataset.v === ordView));
   $('#ordBoard').classList.toggle('hidden', ordView !== 'board'); $('#ordList').classList.toggle('hidden', ordView !== 'list');
   const card = ({ c, o }) => { const st = ordStatus(o), i = PIPE.indexOf(st), d = Math.floor(daysAgo(statusSince(o)));
-    return `<div class="kb-card${st === 'ready' && d > 3 ? ' late' : ''}" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="kb-top"><b>${esc(c.name)}</b><span>${peso(orderNet(o))}</span></div>
-      <small>${esc(o.id)} · ${esc(o.product)}${o.scanPending ? ' <i class="st st-pending">📷 Scan pending</i>' : ''}</small><small class="muted">${dShort(o.date)} · ${d < 1 ? 'today' : d + ' d'} in status${o.payment?.paid ? ' · ✅ paid' : ''}</small>
+    return `<div class="kb-card${st === 'ready' && d > 3 ? ' late' : ''}" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="kb-top"><b>${esc(c.name)}</b></div>
+      <small>${esc(o.id)} · ${esc(o.product)}${o.scanPending ? ' <i class="st st-pending">📷 Scan pending</i>' : ''}</small><small class="muted">${dShort(o.date)} · ${d < 1 ? 'today' : d + ' d'} in status</small>
       <div class="kb-move">${i > 0 ? `<button class="btn ghost" data-mv="${PIPE[i - 1]}" title="Back to ${stLabel(PIPE[i - 1])}">◀</button>` : '<span></span>'}${st !== 'cancelled' && st !== 'delivered' ? `<button class="btn ghost kb-x" data-mv="cancelled" title="Cancel order">✕</button>` : st === 'cancelled' ? `<button class="btn ghost" data-mv="new" title="Re-open">↺</button>` : ''}${i >= 0 && i < PIPE.length - 1 ? `<button class="btn primary" data-mv="${PIPE[i + 1]}">${stLabel(PIPE[i + 1])} ▶</button>` : '<span></span>'}</div></div>`; };
   if (ordView === 'board') {
     $('#ordBoard').innerHTML = STATUSES.map(([k, n]) => { const col = rows.filter(r => ordStatus(r.o) === k); return `<div class="kb-col kb-${k}" data-st="${k}"><div class="kb-h"><b>${n}</b><span>${col.length}</span></div>${col.map(card).join('') || '<p class="tiny muted center">–</p>'}</div>`; }).join('');
     $$('#ordBoard .kb-card').forEach(el => { el.onclick = e => { const b = e.target.closest('[data-mv]'); if (b) { e.stopPropagation(); setOrderStatus(el.dataset.cid, el.dataset.oid, b.dataset.mv); } else openCustomer(el.dataset.cid); }; });
   } else {
-    $('#ordList').innerHTML = rows.length ? `<div class="ord-rows">${rows.map(({ c, o }) => `<div class="ord-row" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="ord-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ${dShort(o.date)}${o.scanPending ? ' <i class="st st-pending">📷 Scan pending</i>' : ''}</small><br><small class="muted">${peso(orderNet(o))} · ${o.payment?.paid ? '✅ paid' + (o.payment.method ? ' (' + esc(o.payment.method) + ')' : '') : 'unpaid'} · since ${fmtDate(statusSince(o))}</small></div>
+    $('#ordList').innerHTML = rows.length ? `<div class="ord-rows">${rows.map(({ c, o }) => `<div class="ord-row" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="ord-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ${dShort(o.date)}${o.scanPending ? ' <i class="st st-pending">📷 Scan pending</i>' : ''}</small><br><small class="muted">since ${fmtDate(statusSince(o))}</small></div>
       <select class="st-sel st-${ordStatus(o)}">${STATUSES.map(([k, n]) => `<option value="${k}" ${k === ordStatus(o) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>`).join('')}</div>` : '<p class="muted center">No orders match.</p>';
     $$('#ordList .ord-row').forEach(el => { el.querySelector('select').onchange = e => setOrderStatus(el.dataset.cid, el.dataset.oid, e.target.value); el.querySelector('.ord-main').onclick = () => openCustomer(el.dataset.cid); });
   }
@@ -1248,41 +1341,17 @@ function renderReminders(list) {
   $$('#remList [data-addscan]').forEach(b => b.onclick = () => openAddScan(b.closest('.rem-row').dataset.cid));
   $$('#remList [data-re]').forEach(b => b.onclick = () => openReorder(b.closest('.rem-row').dataset.cid));
 }
-function reportData(list, F) {
-  const all = allOrders(list).filter(({ c, o }) => orderMatch(c, o, { ...F, status: '' }));
-  const excluded = all.filter(({ c, o }) => ordStatus(o) === 'cancelled' || isTestOrder(c, o));
-  const real = all.filter(x => !excluded.includes(x));
-  const group = (keyFn) => { const m = new Map(); for (const { o } of real) { const k = keyFn(o); const g = m.get(k) || { k, n: 0, rev: 0 }; g.n++; g.rev += orderNet(o); m.set(k, g); } return [...m.values()]; };
-  const byDay = group(o => dayKey(o.date)).sort((a, b) => b.k.localeCompare(a.k));
-  const byMonth = group(o => dayKey(o.date).slice(0, 7)).sort((a, b) => b.k.localeCompare(a.k));
-  const top = group(o => R.PRODUCTS.find(p => p.id === o.productId)?.name || o.product || '–').sort((a, b) => b.n - a.n || b.rev - a.rev);
-  const paid = real.filter(({ o }) => o.payment?.paid);
-  const byPay = (() => { const m = new Map(); for (const { o } of paid) { const k = o.payment.method || 'Not specified'; const g = m.get(k) || { k, n: 0, rev: 0 }; g.n++; g.rev += orderNet(o); m.set(k, g); } return [...m.values()].sort((a, b) => b.rev - a.rev); })();
-  const unpaid = real.filter(({ o }) => !o.payment?.paid);
-  return { real, excluded, byDay, byMonth, top, byPay, revenue: real.reduce((s, { o }) => s + orderNet(o), 0), collected: paid.reduce((s, { o }) => s + orderNet(o), 0), outstanding: unpaid.reduce((s, { o }) => s + orderNet(o), 0), unpaidN: unpaid.length };
-}
-function renderReports(list, F) {
-  const d = reportData(list, F);
-  const bars = (rows, label = r => esc(r.k)) => { const mx = Math.max(1, ...rows.map(r => r.rev)); return rows.length ? `<div class="rep-bars">${rows.map(r => `<div class="rep-bar"><span class="rep-l">${label(r)}</span><span class="rep-track"><i style="width:${Math.max(2, r.rev / mx * 100).toFixed(1)}%"></i></span><span class="rep-v">${peso(r.rev)}<small> · ${r.n}</small></span></div>`).join('')}</div>` : '<p class="muted small">No orders yet.</p>'; };
-  const dayL = r => esc(new Date(r.k + 'T12:00:00+08:00').toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' }));
-  const monL = r => esc(new Date(r.k + '-15T12:00:00+08:00').toLocaleDateString('en-PH', { month: 'long', year: 'numeric' }));
-  $('#repBody').innerHTML = `<div class="rep-kpis"><div><b>${peso(d.revenue)}</b><span>Revenue</span></div><div><b>${d.real.length}</b><span>Orders</span></div><div><b>${peso(d.real.length ? Math.round(d.revenue / d.real.length) : 0)}</b><span>Average order</span></div><div><b>${peso(d.outstanding)}</b><span>Unpaid (${d.unpaidN})</span></div></div>
-    <p class="tiny muted">Real orders only: excludes cancelled orders and test / sample-scan orders (${d.excluded.length} excluded). Revenue = price − discount. Dates in Philippine time. Filters above apply.</p>
-    <div class="card"><h3>Sales by day</h3>${bars(d.byDay.slice(0, 31), dayL)}</div>
-    <div class="card"><h3>Sales by month</h3>${bars(d.byMonth.slice(0, 12), monL)}</div>
-    <div class="card"><h3>Top products</h3>${bars(d.top)}</div>
-    <div class="card"><h3>Revenue by payment method</h3><p class="tiny muted">Paid orders: ${peso(d.collected)} collected.</p>${bars(d.byPay)}${d.unpaidN ? `<p class="small">Not yet paid: <b>${peso(d.outstanding)}</b> (${d.unpaidN} order(s))</p>` : ''}</div>`;
-}
 /* ---- export (CSV + xlsx) ---- */
 function exportRows(list, F) {
-  const custs = list.filter(c => custMatch(c, F)), ords = allOrders(list).filter(({ c, o }) => orderMatch(c, o, F));
-  const ch = ['Customer ID', 'Name', 'Phone', 'Email', 'Tags', 'Staff notes', 'Customer since', 'Updated', 'Orders', 'Last order', 'Total spent (PHP)', 'Right foot (mm)', 'Left foot (mm)', 'Scan source', 'Scan pending', 'Test/sample'];
-  const cr = custs.map(c => { const os = (c.orders || []).filter(o => ordStatus(o) !== 'cancelled'); const last = (c.orders || [])[0];
-    return [String(c.id), c.name || '', c.phone || '', c.email || '', (c.tags || []).join(', '), c.notes || '', c.createdAt ? dayKey(c.createdAt) : '', c.updatedAt ? dayKey(c.updatedAt) : '', (c.orders || []).length, last ? dayKey(last.date) : '', os.reduce((s, o) => s + orderNet(o), 0), c.feet?.R?.length || '', c.feet?.L?.length || '', [...new Set(Object.values(c.feet || {}).map(f => SRC_LABEL[f.source] || f.source))].join(', '), custScanPending(c) ? 'yes' : '', isTestCust(c) ? 'yes' : '']; });
-  const oh = ['Order no', 'Date (PHT)', 'Time (PHT)', 'Customer', 'Phone', 'Product', 'Colours', 'Initials', 'Size', 'Feet', 'Status', 'Status since (PHT)', 'Price (PHP)', 'Discount (PHP)', 'Net (PHP)', 'Payment method', 'Paid', 'Staff', 'Payment notes', 'Created by', 'Scan pending', 'Test/sample'];
-  const tm = iso => new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit' });
-  const or = ords.map(({ c, o }) => [o.id, dayKey(o.date), tm(o.date), c.name || '', c.phone || '', o.product || '', o.design?.colors ? [o.design.colors.extruder1?.name, o.design.colors.extruder2?.name].filter(Boolean).join(' / ') : '', o.design?.text || '', o.size || '', (o.sides || []).join('+'), stLabel(ordStatus(o)), dayKey(statusSince(o)) + ' ' + tm(statusSince(o)), +o.total || 0, +o.payment?.discount || 0, orderNet(o), o.payment?.method || '', o.payment?.paid ? 'yes' : 'no', o.payment?.staffName || '', o.payment?.notes || '', o.by || '', o.scanPending ? 'yes' : '', isTestOrder(c, o) ? 'yes' : '']);
-  return { ch, cr, oh, or };
+  const custs = list.filter(c => custMatch(c, F));
+  const ch = ['Customer ID', 'Name', 'Phone', 'Email', 'Tags', 'Staff notes', 'Customer since', 'Scan visits', 'Last scan (PHT)', 'Right foot (mm)', 'Left foot (mm)', 'Scan source', 'Scan pending', 'Test/sample'];
+  const cr = custs.map(c => { const vs = visitsOf(c); return [String(c.id), c.name || '', c.phone || '', c.email || '', (c.tags || []).join(', '), c.notes || '', c.createdAt ? dayKey(c.createdAt) : '', vs.length, vs[0] ? dayKey(vs[0].date) + ' ' + phtTime(vs[0].date) : '',
+    c.feet?.R?.length || '', c.feet?.L?.length || '', [...new Set(Object.values(c.feet || {}).map(f => SRC_LABEL[f.source] || f.source))].join(', '), custScanPending(c) ? 'yes' : '', isTestCust(c) ? 'yes' : '']; });
+  const sh = ['Customer ID', 'Customer', 'Phone', 'Date (PHT)', 'Time (PHT)', 'Feet', 'Right foot file', 'Left foot file', 'Right length (mm)', 'Left length (mm)', 'Payment amount (PHP)', 'Payment status', 'Payment method', 'Notes'];
+  const sr = custs.flatMap(c => visitsOf(c).filter(v => { const k = dayKey(v.date); return (!F.from || k >= F.from) && (!F.to || k <= F.to); }).map(v => [String(c.id), c.name || '', c.phone || '', dayKey(v.date), phtTime(v.date), FEET_LABEL[v.feet] || v.feet,
+    v.files?.R || (v.sources?.R ? SRC_LABEL[v.sources.R] || v.sources.R : ''), v.files?.L || (v.sources?.L ? SRC_LABEL[v.sources.L] || v.sources.L : ''), v.lengths?.R || '', v.lengths?.L || '', v.payment?.amount ?? '', v.payment?.status === 'paid' ? 'Paid' : 'Unpaid', v.payment?.method || '', v.notes || '']))
+    .sort((a, b) => (b[3] + b[4]).localeCompare(a[3] + a[4]));
+  return { ch, cr, sh, sr };
 }
 const csvCell = v => { const s = String(v ?? ''); return /[",\n\r]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; };
 const toCsv = (h, rows) => '\ufeff' + [h, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n');
@@ -1302,8 +1371,8 @@ function buildXlsx(sheets) { // [{ name, h, rows }] -> Uint8Array
 }
 const expStamp = () => dayKey(new Date().toISOString());
 $('#expCustCsv').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-customers-${expStamp()}.csv`, toCsv(x.ch, x.cr), 'text/csv;charset=utf-8'); toast(`${x.cr.length} customer(s) exported`); };
-$('#expOrdCsv').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-orders-${expStamp()}.csv`, toCsv(x.oh, x.or), 'text/csv;charset=utf-8'); toast(`${x.or.length} order(s) exported`); };
-$('#expXlsx').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-crm-${expStamp()}.xlsx`, buildXlsx([{ name: 'Customers', h: x.ch, rows: x.cr }, { name: 'Orders', h: x.oh, rows: x.or }]), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); toast('Excel workbook exported'); };
+$('#expScanCsv').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-scans-${expStamp()}.csv`, toCsv(x.sh, x.sr), 'text/csv;charset=utf-8'); toast(`${x.sr.length} scan visit(s) exported`); };
+$('#expXlsx').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-crm-${expStamp()}.xlsx`, buildXlsx([{ name: 'Customers', h: x.ch, rows: x.cr }, { name: 'Scans', h: x.sh, rows: x.sr }]), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); toast('Excel workbook exported'); };
 /* ---- customer card ---- */
 function scanHistoryOf(c) {
   const h = (c.scanHistory || []).slice();
@@ -1318,33 +1387,32 @@ function openCustomer(id) {
   const c = crmAll().find(x => x.id === id); if (!c) return;
   c.tags = c.tags || [];
   const probs = problemNames(c), s = c.settings || {}, pf = s.perFoot && Object.keys(s.perFoot).length ? s.perFoot : probs.perFoot;
-  const tags = [...new Set([...TAG_PRESETS, ...c.tags])], hist = scanHistoryOf(c);
+  const tags = [...new Set([...TAG_PRESETS, ...c.tags])], hist = scanHistoryOf(c), vs = visitsOf(c);
   sheet(`<div class="row-between"><h3 style="margin:0">${esc(c.name)}</h3><span class="tag" title="${esc(c.id)}">${esc(String(c.id).length > 12 ? String(c.id).slice(0, 8) : c.id)}</span></div>
     <p class="muted small" style="margin:4px 0 6px">Customer since ${fmtDate(c.createdAt)}${c.phone ? ` · <a href="tel:${esc(c.phone.replace(/[^\d+]/g, ''))}">📞 ${esc(c.phone)}</a>` : ''}</p>
     <div class="tagrow cc-tags">${tags.map(t => `<button class="ctag ctag-${esc(t.toLowerCase())} ${c.tags.includes(t) ? 'on' : ''}" data-tag="${esc(t)}">${c.tags.includes(t) ? '✓ ' : '+ '}${esc(t)}</button>`).join('')}<span class="cc-addtag"><input id="ccTagIn" placeholder="Custom tag" maxlength="24"><button class="btn ghost" id="ccTagAdd">Add</button></span></div>
     ${custScanPending(c) ? `<div class="warn-card cc-pending"><b>📷 Scan pending</b><p class="tiny">Built from ${esc([...new Set(Object.values(c.feet || {}).filter(f => NEEDS_SCAN_SRC.includes(f.source)).map(f => f.source === 'self' ? 'the customer’s ' + (f.entered?.unitLabel || 'size') + ' ' + (f.entered?.value ?? '') : 'manual measurements'))].join(' / '))} – approximate fit. Add the 3D scan to rebuild the print files.</p><button class="btn primary big" id="ccAddScan">📷 Add scan</button></div>` : ''}
+    <div class="row-between"><h4 class="crm-h" style="margin:0">Scan visits (${vs.length})</h4><button class="btn primary small-btn" id="ccNewVisit">＋ New scan visit</button></div>
+    <div class="visits">${vs.length ? vs.map((v, i) => visitHtml(c, v, i)).join('') : '<p class="muted small">No scans yet – tap “New scan visit”.</p>'}</div>
     <details class="cc-sec"><summary><b>Details</b> <span class="muted small">${esc(c.phone || '')}${c.email ? ' · ' + esc(c.email) : ''}</span></summary>
       <label class="field">Name<input id="ccName" value="${esc(c.name || '')}"></label><label class="field">Mobile<input id="ccPhone" inputmode="tel" value="${esc(c.phone || '')}"></label><label class="field">Email<input id="ccEmail" type="email" value="${esc(c.email || '')}"></label><button class="btn ghost" id="ccSaveDet">Save details</button></details>
     <h4 class="crm-h">Staff notes</h4><textarea id="ccNotes" rows="3" placeholder="Internal notes – not shown to the customer">${esc(c.notes || '')}</textarea><button class="btn ghost small-btn" id="ccSaveNotes">Save notes</button>
-    <h4 class="crm-h">Orders (${(c.orders || []).length})</h4>${(c.orders || []).length ? `<div class="crm-orders">${c.orders.map(o => `<div class="cc-ord"><div class="row-between"><span><b>${esc(o.id)}</b><br><small class="muted">${fmtDate(o.date)} · ${esc(o.product)}${o.design?.text ? ' · “' + esc(o.design.text) + '”' : ''} · ${(o.sides || []).join('+')}${o.payment ? ' · ' + (o.payment.paid ? '✅ paid' : 'unpaid') + (o.payment.method ? ' (' + esc(o.payment.method) + ')' : '') : ''}</small></span><span class="crm-ord-r">${peso(orderNet(o))}<button class="btn ghost rc-open" data-oid="${esc(o.id)}">🧾 Receipt</button></span></div>
-      <div class="cc-st"><select class="st-sel st-${ordStatus(o)}" data-oid="${esc(o.id)}">${STATUSES.map(([k, n]) => `<option value="${k}" ${k === ordStatus(o) ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="muted cc-hist">${ordHist(o).map(h => `${stLabel(h.status)} ${new Date(h.at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`).join(' → ')}</small></div></div>`).join('')}</div>` : '<p class="muted small">No orders yet.</p>'}
-    <div class="cc-reorder"><button class="btn primary big" id="crmReorder">↻ Same again</button><button class="btn ghost big" id="crmReorderChg">🎨 Change product / colours</button></div>
-    <h4 class="crm-h">Scan history</h4>${hist.length ? `<div class="crm-orders">${hist.map((h, i) => `<div class="row-between"><span><b>${dShort(h.date)}</b> · ${sideName(h.side)} · ${h.length || '–'} × ${h.width || '–'} mm${h.archType ? ' · ' + esc(R.ARCH_TYPES[h.archType]?.short || h.archType) : ''}<br><small class="muted">${h.source === 'file' ? 'file ' + esc(h.file || '') : esc(SRC_LABEL[h.source] || h.source || '')}${h.meshPath ? ' · ☁️ raw scan stored' : ''}${h.current ? ' · current' : ''}</small></span><button class="btn ghost" data-v3d="${i}">View 3D</button></div>`).join('')}</div>` : '<p class="muted small">No scans saved.</p>'}
+    <details class="cc-sec"><summary><b>Orders (${(c.orders || []).length})</b> <span class="muted small">${(c.orders || [])[0] ? stLabel(ordStatus(c.orders[0])) : ''}</span></summary>${(c.orders || []).length ? `<div class="crm-orders">${c.orders.map(o => `<div class="cc-ord"><b>${esc(o.id)}</b><br><small class="muted">${fmtDate(o.date)} · ${esc(o.product)}${o.design?.text ? ' · “' + esc(o.design.text) + '”' : ''} · ${(o.sides || []).join('+')}${o.scanPending ? ' · 📷 scan pending' : ''}</small>
+      <div class="cc-st"><select class="st-sel st-${ordStatus(o)}" data-oid="${esc(o.id)}">${STATUSES.map(([k, n]) => `<option value="${k}" ${k === ordStatus(o) ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="muted cc-hist">${ordHist(o).map(h => `${stLabel(h.status)} ${new Date(h.at).toLocaleString('en-PH', { timeZone: 'Asia/Manila', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`).join(' → ')}</small></div></div>`).join('')}</div>` : '<p class="muted small">No orders yet.</p>'}
+    <div class="cc-reorder"><button class="btn primary big" id="crmReorder">↻ Same again</button><button class="btn ghost big" id="crmReorderChg">🎨 Change product / colours</button></div><p class="tiny muted">Reorder regenerates the print files from the stored scan – no rescan needed.</p></details>
     <details class="cc-sec"><summary><b>Detected problems &amp; last settings</b></summary>
     <div class="zone-chips">${probs.length ? probs.map(n => `<span class="zchip">${esc(n)}</span>`).join('') : '<span class="muted small">none</span>'}</div>
     <table class="params">${Object.entries(pf).map(([sd, x]) => `<tr><td>${sideName(sd)}</td><td>${R.ARCH_TYPES[x.archType]?.short} · arch ${x.archHeight} mm · cup ${x.heelCupDepth} mm${x.medialPost ? ' · post ' + x.medialPost + '°' : ''}${x.lateralWedge ? ' · wedge ' + x.lateralWedge + '°' : ''}${x.heelLift ? ' · lift ' + x.heelLift + ' mm' : ''}${x.metPad ? ' · met pad' : ''} · ${x.shore}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">–</td></tr>'}
       <tr><td>Product</td><td>${esc(R.PRODUCTS.find(p => p.id === s.productId)?.name || '–')}${s.design ? ' · ' + esc(PAL(s.design.colors?.base).name) + ' / ' + esc(PAL(s.design.colors?.top).name) : ''}</td></tr></table></details>
     <div class="crm-actions"><button class="btn ghost" id="crmLoad">Open in dashboard</button><button class="btn ghost" id="crmDel"${cloudOn() && !Cloud.isAdmin ? ' disabled title="Admins only"' : ''}>Delete</button></div>
-    <p class="tiny muted">Reorder regenerates the print files from the stored scan data and settings – no rescan needed.</p><button class="btn ghost" id="ccAddScan2">📷 ${custScanPending(c) ? 'Add scan' : 'Add / replace scan'}</button>`);
-  $('#ccAddScan2').onclick = () => openAddScan(c.id);
+`);
+  bindVisits(c, vs); $('#ccNewVisit').onclick = () => openScanVisit(c.id);
   $('#sheet').dataset.cid = c.id;
-  $$('#sheet .rc-open').forEach(b => b.onclick = () => openReceipt(c.id, b.dataset.oid));
   $$('#sheet .cc-st select').forEach(sel => sel.onchange = () => setOrderStatus(c.id, sel.dataset.oid, sel.value));
   $$('#sheet [data-tag]').forEach(b => b.onclick = () => { const t = b.dataset.tag; c.tags = c.tags.includes(t) ? c.tags.filter(x => x !== t) : [...c.tags, t]; saveCustomerMeta(c, 'Tags updated'); openCustomer(c.id); });
   $('#ccTagAdd').onclick = () => { const t = $('#ccTagIn').value.trim().replace(/\s+/g, ' ').slice(0, 24); if (!t) return; const pre = TAG_PRESETS.find(p => p.toLowerCase() === t.toLowerCase()) || t; if (!c.tags.includes(pre)) c.tags = [...c.tags, pre]; saveCustomerMeta(c, 'Tag added'); openCustomer(c.id); };
   $('#ccSaveDet').onclick = () => { const n = $('#ccName').value.trim(); if (!n) { toast('Name is required'); return; } Object.assign(c, { name: n, phone: $('#ccPhone').value.trim(), email: $('#ccEmail').value.trim() }); saveCustomerMeta(c, 'Details saved'); openCustomer(c.id); renderCRM(); };
   $('#ccSaveNotes').onclick = () => { c.notes = $('#ccNotes').value.trim(); saveCustomerMeta(c, 'Notes saved'); };
-  $$('#sheet [data-v3d]').forEach(b => b.onclick = () => viewScan3D(c, hist[+b.dataset.v3d]));
   $('#crmLoad').onclick = () => { loadCustomer(c); $('#sheet').classList.add('hidden'); show('s-staff'); toast(c.name + ' loaded'); };
   $('#crmReorder').onclick = () => doReorder(c, null);
   $('#crmReorderChg').onclick = () => openReorder(c.id);
@@ -1357,37 +1425,120 @@ function openCustomer(id) {
 }
 // v11.1: add the 3D scan later for a "scan pending" customer -> regenerate the print files of the pending order(s)
 const custScanPending = c => !!c.scanPending || needsScanFeet(c.feet);
-function openAddScan(cid) {
+function openAddScan(cid) { openScanVisit(cid); }
+/* ---- v11.2 scan visits: date/time + feet + files + simple payment (the heart of the CRM) ---- */
+const VISIT_METHODS = ['Cash', 'GCash', 'Card', 'Bank transfer'];
+const feetCode = sides => sides.includes('R') && sides.includes('L') ? 'both' : sides.includes('L') ? 'L' : 'R';
+const FEET_LABEL = { both: 'Both feet', R: 'Right foot', L: 'Left foot' };
+const phtDT = iso => new Date(iso).toLocaleString('en-PH', { timeZone: 'Asia/Manila', weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+const phtTime = iso => new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit' });
+const toLocalInput = iso => new Date(new Date(iso).getTime() + 8 * 3600e3).toISOString().slice(0, 16);
+const fromLocalInput = v => new Date(v + ':00+08:00').toISOString();
+const histKey = h => h.id || h.sig || (h.side + '|' + h.date);
+function newVisit(sides, feet, refs, date = new Date().toISOString()) {
+  return { id: crypto.randomUUID(), date, feet: feetCode(sides), files: Object.fromEntries(sides.map(s => [s, feet[s]?.file || null])), sources: Object.fromEntries(sides.map(s => [s, feet[s]?.source || null])),
+    lengths: Object.fromEntries(sides.map(s => [s, feet[s]?.length || null])), refs, payment: { amount: null, status: 'unpaid', method: null }, notes: '', by: staffName() || null };
+}
+// real visits + visits derived from older scans that were saved before v11.2 (grouped by minute)
+function visitsOf(c) {
+  const real = (c.visits || []).slice(), used = new Set(real.flatMap(v => v.refs || []));
+  const groups = new Map();
+  for (const h of scanHistoryOf(c)) { if (h.current && real.length) continue; const k = histKey(h); if (used.has(k)) continue; const g = String(h.date || '').slice(0, 16); const x = groups.get(g) || { date: h.date, sides: [], files: {}, sources: {}, lengths: {}, refs: [] };
+    if (!x.sides.includes(h.side)) { x.sides.push(h.side); x.files[h.side] = h.file || null; x.sources[h.side] = h.source; x.lengths[h.side] = h.length; } x.refs.push(k); groups.set(g, x); }
+  const derived = [...groups.values()].map(x => ({ id: null, derived: true, date: x.date, feet: feetCode(x.sides), files: x.files, sources: x.sources, lengths: x.lengths, refs: x.refs, payment: { amount: null, status: 'unpaid', method: null }, notes: '' }));
+  return [...real, ...derived].sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+function saveVisit(cid, v) {
+  const list = crmAll(), c = list.find(x => x.id === cid); if (!c) return null;
+  if (!v.id) { v.id = crypto.randomUUID(); delete v.derived; }
+  c.visits = c.visits || []; const i = c.visits.findIndex(x => x.id === v.id); if (i >= 0) c.visits[i] = v; else c.visits.push(v);
+  crmSave(list); if (cloudOn()) cloudJob('scan visit', () => upsertVisitCloud(c, v));
+  return { c, v };
+}
+function visitHtml(c, v, i) {
+  const sides = v.feet === 'both' ? ['R', 'L'] : [v.feet], p = v.payment || {};
+  const fileLine = sides.map(s => `${s}: ${v.files?.[s] ? esc(v.files[s]) : esc(SRC_LABEL[v.sources?.[s]] || v.sources?.[s] || '–')}${v.lengths?.[s] ? ' · ' + v.lengths[s] + ' mm' : ''}`).join('<br>');
+  return `<div class="visit ${p.status === 'paid' ? 'is-paid' : ''}" data-vi="${i}"><div class="v-top"><b>${phtDT(v.date)}</b><span class="feet-badge">${FEET_LABEL[v.feet] || v.feet}</span></div>
+    <small class="v-files">${fileLine}</small>${v.notes ? `<small class="muted">📝 ${esc(v.notes)}</small>` : ''}
+    <div class="v-pay"><label class="v-amt">₱<input type="number" min="0" step="1" inputmode="decimal" placeholder="Amount" value="${p.amount ?? ''}" data-f="amount"></label>
+      <div class="v-st"><button data-st="paid" class="${p.status === 'paid' ? 'on' : ''}">Paid</button><button data-st="unpaid" class="${p.status !== 'paid' ? 'on' : ''}">Unpaid</button></div>
+      <select data-f="method"><option value="">Method</option>${VISIT_METHODS.map(m => `<option ${m === p.method ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+    <div class="v-act">${sides.map(s => `<button class="btn ghost" data-v3s="${s}">View 3D ${s}</button>`).join('')}<button class="btn ghost" data-vedit="1">✏ Edit</button><button class="btn ghost" data-vrc="1">🧾</button></div></div>`;
+}
+function bindVisits(c, vs) {
+  $$('#sheet .visit').forEach(el => {
+    const v = vs[+el.dataset.vi], save = msg => { const r = saveVisit(c.id, v); if (r) { Object.assign(c, r.c); toast(msg + (cloudOn() ? ' (cloud)' : '')); } };
+    el.querySelector('[data-f="amount"]').onchange = e => { const n = e.target.value === '' ? null : Math.max(0, Math.round(+e.target.value * 100) / 100); v.payment = { ...v.payment, amount: n }; save('Payment amount saved'); };
+    el.querySelector('[data-f="method"]').onchange = e => { v.payment = { ...v.payment, method: e.target.value || null }; save('Payment method saved'); };
+    el.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { v.payment = { ...v.payment, status: b.dataset.st }; el.querySelectorAll('[data-st]').forEach(x => x.classList.toggle('on', x === b)); el.classList.toggle('is-paid', b.dataset.st === 'paid'); save(b.dataset.st === 'paid' ? 'Marked paid' : 'Marked unpaid'); });
+    el.querySelectorAll('[data-v3s]').forEach(b => b.onclick = () => { const s = b.dataset.v3s, h = scanHistoryOf(c).find(h => h.side === s && (v.refs || []).includes(histKey(h))) || scanHistoryOf(c).find(h => h.side === s && Math.abs(new Date(h.date) - new Date(v.date)) < 120e3) || { side: s, date: v.date, length: v.lengths?.[s], width: c.feet?.[s]?.width, archType: c.feet?.[s]?.archType, source: v.sources?.[s] }; viewScan3D(c, h); });
+    el.querySelector('[data-vedit]').onclick = () => openScanVisit(c.id, v);
+    el.querySelector('[data-vrc]').onclick = () => visitReceipt(c, v);
+  });
+}
+async function visitReceipt(c, v) {
+  const sides = v.feet === 'both' ? ['R', 'L'] : [v.feet], p = v.payment || {};
+  const lines = [FEET_LABEL[v.feet] + ' · ' + phtDT(v.date), ...sides.map(s => `${sideName(s)}: ${v.files?.[s] || SRC_LABEL[v.sources?.[s]] || '–'}${v.lengths?.[s] ? ' · ' + v.lengths[s] + ' mm' : ''}`)];
+  const d = { receiptNo: 'SV-' + dayKey(v.date).replace(/-/g, '') + '-' + String(v.id || 'X').slice(0, 4).toUpperCase(), date: v.date, customer: { name: c.name, phone: c.phone, email: c.email }, items: [{ title: 'Foot scan visit', lines, qty: '1', unit: +p.amount || 0, n: 1 }],
+    discount: 0, payment: { method: p.method, paid: p.status === 'paid' }, staffName: staffName(), notes: v.notes || '', biz: bizSettings(), test: isTestCust(c), ...logoData() };
+  try { const r = await buildReceiptPdf(d); downloadBlob(r.blob, r.name); toast('Receipt downloaded'); } catch (e) { toast('Could not create the receipt: ' + e.message, 4000); }
+}
+// add a scan visit (with optional scan files + payment) or edit an existing one
+function openScanVisit(cid, edit = null) {
   const c = crmAll().find(x => x.id === cid); if (!c) return;
-  loadCustomer(c); const got = {};
+  const isNew = !edit, got = {}; if (isNew) loadCustomer(c);
+  const form = { date: edit?.date || new Date().toISOString(), amount: edit?.payment?.amount ?? '', status: edit?.payment?.status || 'unpaid', method: edit?.payment?.method || '', notes: edit?.notes || '' };
+  const keep = () => { if (!$('#svDate')) return; form.date = $('#svDate').value ? fromLocalInput($('#svDate').value) : form.date; form.amount = $('#svAmt').value; form.method = $('#svMethod').value; form.notes = $('#svNotes').value; };
   const draw = () => {
-    sheet(`<div class="row-between"><h3 style="margin:0">📷 Add scan – ${esc(c.name)}</h3><button class="btn ghost small-btn" id="asBack">← Back</button></div>
-      <p class="small muted">Upload the 3D scan of each foot (STL, OBJ or PLY). Left / right is detected automatically. The pending order's print files are then rebuilt from the scan (same order number, same design).</p>
-      <div class="scan-feet">${['R', 'L'].map(sd => { const f = state.feet[sd]; return `<div class="sf ${got[sd] ? 'done' : ''}"><div class="sf-ic">${got[sd] ? '✓' : sd === 'R' ? '①' : '②'}</div><div><b>${sideName(sd)} foot</b><small>${got[sd] ? '3D scan · ' + esc(got[sd]) + ' · ' + f.length + ' mm' : f ? esc(SRC_LABEL[f.source] || f.source) + ' · ' + f.length + ' mm – waiting for scan' : 'waiting for scan'}</small></div></div>`; }).join('')}</div>
-      <label class="btn primary big file-btn"><span>${Object.keys(got).length ? 'Upload the other foot' : 'Upload scan file'}</span><input type="file" id="asFile" accept=".stl,.obj,.ply,model/stl,model/obj,application/octet-stream" multiple></label>
-      <p class="tiny" id="asMsg" style="min-height:1.2em"></p>
-      <button class="btn ${Object.keys(got).length ? 'primary' : 'ghost'} big" id="asApply" ${Object.keys(got).length ? '' : 'disabled'}>Save scan &amp; regenerate print files</button>`);
-    $('#asBack').onclick = () => openCustomer(c.id);
-    $('#asFile').onchange = async e => {
+    sheet(`<div class="row-between"><h3 style="margin:0">${isNew ? '＋ New scan visit' : '✏ Scan visit'} – ${esc(c.name)}</h3><button class="btn ghost small-btn" id="svBack">← Back</button></div>
+      ${isNew ? `<p class="small muted">Upload the 3D scan of one or both feet (STL, OBJ or PLY – left/right detected automatically), or save the visit without a file.</p>
+      <div class="scan-feet">${['R', 'L'].map(sd => `<div class="sf ${got[sd] ? 'done' : ''}"><div class="sf-ic">${got[sd] ? '✓' : sd === 'R' ? '①' : '②'}</div><div><b>${sideName(sd)} foot</b><small>${got[sd] ? esc(got[sd]) + ' · ' + state.feet[sd].length + ' mm' : 'no file yet'}</small></div></div>`).join('')}</div>
+      <label class="btn ghost big file-btn"><span>📂 ${Object.keys(got).length ? 'Upload the other foot' : 'Upload scan file(s)'}</span><input type="file" id="svFile" accept=".stl,.obj,.ply,model/stl,model/obj,application/octet-stream" multiple></label><p class="tiny" id="svMsg"></p>`
+      : `<p class="small muted">${FEET_LABEL[edit.feet]} · ${['R', 'L'].filter(s => edit.files?.[s]).map(s => esc(edit.files[s])).join(', ') || 'no file'}</p>`}
+      <label class="field">Date &amp; time (Philippine time)<input type="datetime-local" id="svDate" value="${toLocalInput(form.date)}"></label>
+      <h4 class="crm-h">Payment</h4>
+      <div class="v-pay big"><label class="v-amt">₱<input type="number" id="svAmt" min="0" step="1" inputmode="decimal" placeholder="Amount" value="${form.amount}"></label>
+        <div class="v-st" id="svSt"><button data-st="paid" class="${form.status === 'paid' ? 'on' : ''}">Paid</button><button data-st="unpaid" class="${form.status !== 'paid' ? 'on' : ''}">Unpaid</button></div>
+        <select id="svMethod"><option value="">Method</option>${VISIT_METHODS.map(m => `<option ${m === form.method ? 'selected' : ''}>${m}</option>`).join('')}</select></div>
+      <label class="field">Notes<input id="svNotes" maxlength="300" value="${esc(form.notes)}" placeholder="optional"></label>
+      <button class="btn primary big" id="svSave">💾 Save scan visit</button>
+      ${!isNew && edit.id && (!cloudOn() || Cloud.isAdmin) ? '<button class="btn ghost" id="svDel">Delete this visit</button>' : ''}`);
+    $('#svBack').onclick = () => openCustomer(c.id);
+    $$('#svSt button').forEach(b => b.onclick = () => { form.status = b.dataset.st; $$('#svSt button').forEach(x => x.classList.toggle('on', x === b)); });
+    $('#svFile') && ($('#svFile').onchange = async e => {
+      keep();
       for (const f of [...e.target.files]) {
-        try {
-          $('#asMsg').textContent = 'Reading ' + f.name + '…';
+        try { $('#svMsg').textContent = 'Reading ' + f.name + '…';
           let obj; if (/\.stl$/i.test(f.name)) obj = new STLLoader().parse(await f.arrayBuffer()); else if (/\.obj$/i.test(f.name)) obj = new OBJLoader().parse(await f.text()); else if (/\.ply$/i.test(f.name)) obj = new PLYLoader().parse(await f.arrayBuffer()); else throw new Error('Please choose an STL, OBJ or PLY file');
           const raw = objToGeo(obj), res = alignScan(raw, f.name), sd = applyAligned(res, f.name, raw); state.nudge[sd] = {}; got[sd] = f.name;
         } catch (err) { console.warn(err); toast('Could not read ' + f.name + ': ' + err.message, 4500); }
       }
       draw();
+    });
+    $('#svDel') && ($('#svDel').onclick = async () => {
+      if (!confirm('Delete this scan visit?')) return;
+      if (cloudOn()) { try { await cloudQueue; await deleteVisitCloud(edit.id); } catch (e) { toast('Delete failed: ' + e.message, 4500); return; } }
+      const list = crmAll(), cc = list.find(x => x.id === c.id); cc.visits = (cc.visits || []).filter(x => x.id !== edit.id); crmSave(list); toast('Visit deleted'); openCustomer(c.id);
+    });
+    $('#svSave').onclick = () => {
+      keep();
+      const pay = { amount: form.amount === '' ? null : Math.max(0, Math.round(+form.amount * 100) / 100), status: form.status, method: form.method || null };
+      if (!isNew) { const v = { ...edit, date: form.date, payment: pay, notes: form.notes.trim() }; saveVisit(c.id, v); toast('Scan visit saved' + (cloudOn() ? ' (cloud)' : '')); openCustomer(c.id); return; }
+      const sides = Object.keys(got);
+      if (sides.length) applyAddedScan(c, got, { date: form.date, payment: pay, notes: form.notes.trim() });
+      else { const v = newVisit([], {}, [], form.date); v.feet = 'both'; v.files = {}; v.payment = pay; v.notes = form.notes.trim() || 'Visit without scan file'; saveVisit(c.id, v); toast('Scan visit saved'); openCustomer(c.id); }
     };
-    $('#asApply').onclick = () => applyAddedScan(c, got);
   };
   draw();
 }
-function applyAddedScan(c0, got) {
+function applyAddedScan(c0, got, vi = {}) {
   const list = crmAll(), c = list.find(x => x.id === c0.id) || c0, now = new Date().toISOString();
   Object.assign(c, snapshot(), { updatedAt: now });
   c.scanHistory = c.scanHistory || [];
   for (const sd of Object.keys(got)) { const f = state.feet[sd], sig = scanSig(f); if (!c.scanHistory.some(h => h.sig === sig)) c.scanHistory.push({ sig, side: sd, source: f.source, file: f.file || null, length: f.length, width: f.width, archType: f.archType, csi: f.csi, date: now }); }
   c.scanPending = needsScanFeet(state.feet);
+  const vsides = Object.keys(got), visit = newVisit(vsides, state.feet, vsides.map(sd => scanSig(state.feet[sd])), vi.date || now); if (vi.payment) visit.payment = vi.payment; visit.notes = vi.notes || '';
+  c.visits = c.visits || []; c.visits.push(visit);
   const pend = (c.orders || []).filter(o => o.scanPending && ordStatus(o) !== 'cancelled'), regen = [];
   for (const o of pend) {
     const stls = Object.keys(state.feet).map(sd => buildStl(sd, o.id));
@@ -1397,7 +1548,7 @@ function applyAddedScan(c0, got) {
   }
   crmSave(list);
   regen.forEach(({ o, stls, spec }, k) => { setTimeout(() => download(`${o.id}-spec.json`, JSON.stringify(spec, null, 2), 'application/json'), 900 * k); stls.forEach((x, i) => setTimeout(() => download(x.name, x.data, 'model/stl'), 900 * k + 400 * (i + 1))); });
-  if (cloudOn()) { const files = rawMeshFiles(); cloudJob('scan', async () => { await saveCustomerCloud(c, files); for (const { o, stls, spec } of regen) await insertOrderCloud(c, o, spec, stls); }); }
+  if (cloudOn()) { const files = rawMeshFiles(); cloudJob('scan', async () => { await saveCustomerCloud(c, files); visit.refs = vsides.map(sd => c.scanIds?.[sd]).filter(Boolean); await upsertVisitCloud(c, visit); for (const { o, stls, spec } of regen) await insertOrderCloud(c, o, spec, stls); }); }
   toast(regen.length ? `Scan saved · ${regen.length} order(s) regenerated from the 3D scan${c.scanPending ? ' (one foot still pending)' : ''}` : 'Scan saved' + (c.scanPending ? ' (one foot still pending)' : ''), 4200);
   renderCRM(); openCustomer(c.id);
 }
@@ -1421,7 +1572,7 @@ function openReorder(cid) {
   const draw = () => {
     const d = R.DESIGN[ds.productId];
     sheet(`<div class="row-between"><h3 style="margin:0">↻ Reorder for ${esc(c.name)}</h3><button class="btn ghost small-btn" id="roBack">← Back</button></div><p class="small muted">Uses the saved scan – no rescan needed.</p>
-      <label class="field">Product<select id="roProd">${Object.keys(R.DESIGN).map(id => `<option value="${id}" ${id === ds.productId ? 'selected' : ''}>${esc(R.PRODUCTS.find(p => p.id === id)?.name || id)} · ${peso(priceOf(id))}</option>`).join('')}</select></label>
+      <label class="field">Product<select id="roProd">${Object.keys(R.DESIGN).map(id => `<option value="${id}" ${id === ds.productId ? 'selected' : ''}>${esc(R.PRODUCTS.find(p => p.id === id)?.name || id)}</option>`).join('')}</select></label>
       ${d.parts.map((part, i) => { const k = i ? 'top' : 'base'; return `<div class="ro-pal"><b class="small">${esc(part)}</b><div class="dz-sw">${R.PALETTE.map(pc => `<button class="sw ${pc.id === ds.colors[k] ? 'on' : ''}" data-k="${k}" data-c="${pc.id}" title="${esc(pc.name)}" style="background:${pc.hex}"></button>`).join('')}</div><small class="muted">${esc(PAL(ds.colors[k]).name)}</small></div>`; }).join('')}
       <label class="field">Initials (optional)<input id="roText" maxlength="${TEXT_RULES?.maxChars || 4}" value="${esc(ds.text)}" placeholder="e.g. JP"></label>
       <button class="btn primary big" id="roGo">Create order &amp; print files</button>`);
@@ -1452,14 +1603,14 @@ $('#crmSearch').oninput = renderCRM;
 $('#fClear').onclick = () => { ['#fTag', '#fProduct', '#fStatus', '#fScan', '#fFrom', '#fTo'].forEach(s => $(s).value = ''); renderCRM(); };
 $$('#crmTabs button').forEach(b => b.onclick = () => { crmTab = b.dataset.t; renderCRM(); });
 $$('#ordView button').forEach(b => b.onclick = () => { ordView = b.dataset.v; renderCRM(); });
-window.__fixiCRM = { reportData: () => reportData(crmAll(), crmFilters()), exportRows: () => exportRows(crmAll(), crmFilters()), buildXlsx, toCsv, readyOverdue, replacementDue, setOrderStatus };
+window.__fixiCRM = { visitsOf, saveVisit, exportRows: () => exportRows(crmAll(), crmFilters()), buildXlsx, toCsv, readyOverdue, replacementDue, setOrderStatus };
 $('#crmBtn').onclick = () => show('s-crm');
 $('#crmSaveBtn').onclick = () => {
   const cur = crmAll().find(x => x.id === state.customerId);
   sheet(`<h3>Save customer</h3><label class="field">Name<input id="svName" value="${esc(cur?.name || '')}" placeholder="Full name"></label><label class="field">Mobile<input id="svPhone" inputmode="tel" value="${esc(cur?.phone || '')}" placeholder="09xx xxx xxxx"></label><button class="btn primary big" id="svOk">Save scans + settings</button>`);
   $('#svOk').onclick = () => { const n = $('#svName').value.trim(); if (!n) return toast('Name required'); const c = saveCurrentCustomer(n, $('#svPhone').value.trim()); $('#sheet').classList.add('hidden'); toast('Saved: ' + c.name); renderStaff(); };
 };
-$('#crmNewBtn').onclick = () => { state.feet = {}; state.uploaded = {}; state.qa = {}; state.staffAdds = new Set(); state.staffRemoves = new Set(); state.archOverride = {}; state.customerId = null; state.product = null; show('s-scan'); };
+$('#crmNewBtn').onclick = () => { state.feet = {}; state.uploaded = {}; state.qa = {}; state.staffAdds = new Set(); state.staffRemoves = new Set(); state.archOverride = {}; state.fitOver = {}; state.customerId = null; state.product = null; show('s-scan'); };
 
 /* ---------------- v9: design first – catalog -> designer -> summary -> scan ---------------- */
 function renderCatalog() {
@@ -1539,7 +1690,7 @@ function renderStaffDesign() {
     el.innerHTML = `<table class="params"><tr><td>Product</td><td>${esc(d.product)} · chosen by ${esc(d.changedBy)}${d.keptSuggestion ? ' · kept over suggested ' + esc(d.keptSuggestion) : ''}</td></tr>
       ${['extruder1', 'extruder2'].map((k, i) => `<tr><td>Extruder ${i + 1}</td><td><span class="sw" style="background:${d.colors[k].hex};width:14px;height:14px;display:inline-block;vertical-align:middle"></span> ${esc(d.colors[k].part)} – ${esc(d.colors[k].name)} ${esc(d.colors[k].hex)} · ${esc(d.colors[k].material)}</td></tr>`).join('')}
       <tr><td>Initials</td><td>${d.text ? `“${esc(d.text)}” – ${eg && !eg.error && !eg.pending ? `REAL geometry, ${esc(eg.location)}, ${eg.capHeightMm} mm letters, ${eg.depthMm} mm deep, min feature ${eg.minFeatureMm} mm (${esc(eg.method)})` : eg?.error ? '⚠️ ' + esc(eg.error) + ' – add by hand / note in spec' : 'generated with the print files'}` : '–'}</td></tr>
-      <tr><td>Size</td><td>${esc(d.size)}</td></tr><tr><td>Price</td><td>${peso(d.price.amount)}</td></tr></table><button class="btn ghost" id="sdEdit">✏️ Edit design</button>`;
+      <tr><td>Size</td><td>${esc(d.size)}</td></tr></table><button class="btn ghost" id="sdEdit">✏️ Edit design</button>`;
     $('#sdEdit').onclick = () => show('s-design'); }
   const pe = $('#priceEdit'); if (!pe) return;
   pe.innerHTML = R.CATALOG.map(id => R.PRODUCTS.find(p => p.id === id)).map(p => `<label class="price-row"><span>${esc(p.name.replace('Fixifoot ', ''))}</span><input type="number" min="0" step="1" inputmode="numeric" data-id="${p.id}" value="${priceOf(p.id)}"></label>`).join('');
@@ -1642,7 +1793,7 @@ if (qp.get('demo') && testHooks) {
   recompute();
   if (qp.get('product')) { state.product = R.PRODUCTS.find(p => p.id === qp.get('product')); state.color = state.product?.colors[0]; state.strapColor = state.product?.strapColors?.[0]; }
 }
-window.__fixiFit = { alignScan, rasterizePlantar, deriveModel, buildContactSole, morphTemplate, toPrintable, fitCheck, buildFoot, STLLoader, OBJLoader, STLExporter, THREE, loadTemplate, templateCache, footModel, fitFor, buildStl, state, objToGeo };
+window.__fixiFit = { alignScan, rasterizePlantar, deriveModel, buildContactSole, morphTemplate, toPrintable, fitCheck, buildFoot, STLLoader, OBJLoader, STLExporter, THREE, loadTemplate, templateCache, footModel, fitFor, buildStl, state, objToGeo, currentSpec, fittingFor, productObject, scanModel, renderStaff };
 seedCRM();
 // v5 cloud init: no keys in config.js -> offline mode (PIN + on-device CRM); v10: PIN only when the cloud is unreachable
 if (Cloud.configured) initCloud().then(() => {

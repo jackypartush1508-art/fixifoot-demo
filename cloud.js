@@ -53,11 +53,12 @@ export async function resetPassword(email) { must(await Cloud.client.auth.resetP
 // app shape: { id, name, phone, email, notes, createdAt, updatedAt, feet:{R,L}, archOverride, qa, lld, staffAdds, staffRemoves, conditions, settings, orders:[...] }
 export async function fetchCustomers() {
   const sb = Cloud.client;
-  const [cs, sc, os] = await Promise.all([
+  const [cs, sc, os, vs] = await Promise.all([
     sb.from('customers').select('*').order('updated_at', { ascending: false }).limit(500),
     sb.from('scans').select('id,customer_id,side,source,mesh_path,plantar_map,metrics,created_at').order('created_at', { ascending: false }).limit(2000),
-    sb.from('orders').select('id,order_no,customer_id,product,color,size,status,stl_paths,settings,design,price_php,payment_method,paid,discount,receipt_no,status_history,status_updated_at,scan_pending,created_at').order('created_at', { ascending: false }).limit(2000)]);
-  const C = must(cs), S = must(sc), O = must(os);
+    sb.from('orders').select('id,order_no,customer_id,product,color,size,status,stl_paths,settings,design,price_php,payment_method,paid,discount,receipt_no,status_history,status_updated_at,scan_pending,created_at').order('created_at', { ascending: false }).limit(2000),
+    sb.from('scan_visits').select('*').order('scanned_at', { ascending: false }).limit(5000)]);
+  const C = must(cs), S = must(sc), O = must(os), V = vs.error ? [] : (vs.data || []);
   return C.map(c => {
     const feet = {}, scanIds = {};
     const scanHistory = [];
@@ -66,7 +67,7 @@ export async function fetchCustomers() {
       if (!feet[s.side]) { feet[s.side] = { ...s.metrics, side: s.side, source: s.source, ...(s.plantar_map ? { map: s.plantar_map } : {}), meshPath: s.mesh_path || null }; scanIds[s.side] = s.id; }
     }
     const p = c.profile || {}, sig = {}; for (const sd in feet) sig[sd] = scanSig(feet[sd]);
-    return { id: c.id, cloud: true, scanSig: sig, name: c.name, phone: c.phone || '', email: c.email || '', notes: c.notes || '', tags: c.tags || [], scanPending: !!c.scan_pending, scanHistory, createdAt: c.created_at, updatedAt: c.updated_at,
+    return { id: c.id, cloud: true, scanSig: sig, name: c.name, phone: c.phone || '', email: c.email || '', notes: c.notes || '', tags: c.tags || [], scanPending: !!c.scan_pending, scanHistory, visits: V.filter(v => v.customer_id === c.id).map(visitFromRow), createdAt: c.created_at, updatedAt: c.updated_at,
       feet, scanIds, archOverride: p.archOverride || {}, qa: p.qa || {}, lld: p.lld, staffAdds: p.staffAdds || [], staffRemoves: p.staffRemoves || [], conditions: p.conditions || [], settings: p.settings || {},
       orders: O.filter(o => o.customer_id === c.id).map(o => ({ id: o.order_no, uuid: o.id, date: o.created_at, productId: o.settings?.productId || null, product: o.product, color: o.color, base: o.settings?.base || 'parametric', sides: o.settings?.sides || [], total: o.price_php ?? o.settings?.total ?? 0, by: o.settings?.by || 'staff', status: o.status, stlPaths: o.stl_paths || [], design: o.design || null, size: o.size || null, feetInfo: o.settings?.feetInfo || null,
         statusHistory: o.status_history || [], statusAt: o.status_updated_at || null, scanPending: !!o.scan_pending,
@@ -111,6 +112,15 @@ export async function updateOrderPaymentCloud(orderNo, p) {
   const settings = { ...(cur.settings || {}), receipt: { notes: p.notes || null, staffName: p.staffName || null } };
   return must(await sb.from('orders').update({ payment_method: p.method || null, paid: !!p.paid, discount: p.discount || 0, receipt_no: p.receiptNo || orderNo, settings }).eq('order_no', orderNo).select('id'));
 }
+// v11.2: scan visits (date/time, feet, files) with a simple payment – table scan_visits
+const visitFromRow = v => ({ id: v.id, date: v.scanned_at, feet: v.feet, files: v.details?.files || {}, sources: v.details?.sources || {}, lengths: v.details?.lengths || {}, refs: v.details?.scanIds || [],
+  payment: { amount: v.payment_amount == null ? null : +v.payment_amount, status: v.payment_status || 'unpaid', method: v.payment_method || null }, notes: v.notes || '', cloud: true });
+export async function upsertVisitCloud(c, v) {
+  const row = { id: v.id, customer_id: c.id, scanned_at: v.date, feet: v.feet, details: { files: v.files || {}, sources: v.sources || {}, lengths: v.lengths || {}, scanIds: (v.refs || []).filter(r => /^[0-9a-f-]{36}$/i.test(r)) },
+    payment_amount: v.payment?.amount ?? null, payment_status: v.payment?.status === 'paid' ? 'paid' : 'unpaid', payment_method: v.payment?.method || null, notes: v.notes || null };
+  return must(await Cloud.client.from('scan_visits').upsert(row, { onConflict: 'id' }).select('id'));
+}
+export async function deleteVisitCloud(id) { return must(await Cloud.client.from('scan_visits').delete().eq('id', id).select('id')); }
 // v11.1: scan added later -> clear the pending flag on the order(s)
 export async function clearScanPendingCloud(orderNos) {
   if (!orderNos.length) return [];
