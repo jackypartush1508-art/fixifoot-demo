@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0099FF">
+<meta name="description" content="Fixifoot Philippines demo – scan your feet and design custom 3D-printed insoles and flip-flops.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fixifoot">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Fixifoot Philippines – Custom Fit Demo</title>
+<link rel="stylesheet" href="styles.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/addons/" } }
+</script>
+</head>
+<body>
+<div class="splash" id="splash"><img src="assets/logo.png" alt="Fixifoot"><div class="splash-bar"><i></i></div><span>Custom orthotic insoles · Philippines</span></div>
+<div id="app">
+  <header class="topbar" id="topbar">
+    <button class="icon-btn" id="backBtn" aria-label="Back">&#8592;</button>
+    <div class="brand-mini"><img class="brand-logo" src="assets/logo.png" alt="Fixifoot"></div>
+    <span class="demo-pill">DEMO</span>
+    <button class="staff-btn" id="staffBtn" aria-label="Switch to staff view">🛠 Staff view</button>
+  </header>
+  <div class="mode-banner" id="modeBanner"></div>
+  <div class="steps" id="steps"><div class="steps-fill" id="stepsFill"></div></div>
+
+  <!-- 1. WELCOME -->
+  <section class="screen active" id="s-welcome" data-step="0">
+    <div class="hero">
+      <img class="hero-logo-img" src="assets/logo.png" alt="Fixifoot – orthotic insoles">
+      <div class="hero-sub">Philippines · Take the right step</div>
+      <p class="lead">Custom 3D-printed insoles &amp; flip-flops, made from a scan of <b>your</b> feet.</p>
+      <ol class="how">
+        <li><span>1</span>Scan your foot with the phone</li>
+        <li><span>2</span>Answer a few quick questions</li>
+        <li><span>3</span>Pick your style &amp; colour</li>
+        <li><span>4</span>We print it for you</li>
+      </ol>
+    </div>
+    <div class="bottom-actions">
+      <button class="btn primary big" data-go="s-scan">Start foot scan</button>
+      <p class="tiny muted center">Takes about 3 minutes · no account needed</p>
+      <p class="disclaimer small">Comfort product – not a medical diagnosis. If you have diabetes or ongoing pain, please see a podiatrist or doctor.</p>
+    </div>
+  </section>
+
+  <!-- 2. SCAN -->
+  <section class="screen" id="s-scan" data-step="1">
+    <h2>Scan your foot</h2>
+    <div class="scan-steps" id="scanSteps"><span data-side="R" class="on">① Right foot</span><span data-side="L">② Left foot</span></div>
+    <div class="cam-wrap" id="camWrap">
+      <video id="camVideo" playsinline muted autoplay></video>
+      <div class="cam-fallback" id="camFallback">
+        <div class="paper"><div class="foot-guide-fill"></div></div>
+        <p id="camMsg">Camera preview appears here</p>
+      </div>
+      <div class="cam-overlay">
+        <span class="demo-badge">Demo scan</span>
+        <svg class="foot-guide" viewBox="0 0 100 200" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+          <rect x="6" y="4" width="88" height="192" rx="6" fill="none" stroke="#fff" stroke-dasharray="4 3" stroke-width="1.4" opacity=".8"/>
+          <path id="footPath" d="M50 18c14 0 22 12 22 30 0 14-6 22-6 40 0 18 8 30 8 52 0 24-12 44-25 44S26 170 28 146c2-22 4-34-2-54-5-16-10-32-6-48 3-16 14-26 30-26z" fill="rgba(255,255,255,.12)" stroke="#fff" stroke-width="1.6"/>
+        </svg>
+        <div class="scan-transition hidden" id="scanTransition"><div class="big-emoji">👏</div><b>Great!</b><span>Now your <u id="trSide">left</u> foot</span></div>
+        <div class="ring-wrap" id="ringWrap">
+          <svg viewBox="0 0 120 120" class="ring"><circle cx="60" cy="60" r="52" class="ring-bg"/><circle cx="60" cy="60" r="52" class="ring-fg" id="ringFg"/></svg>
+          <div class="ring-label"><b id="ringPct">0%</b><span id="ringPhase">Ready</span></div>
+        </div>
+      </div>
+    </div>
+    <p class="hint" id="scanHint">Place the foot on a sheet of A4 paper. Hold the phone 30–40 cm away and slowly move it around the foot.</p>
+    <div class="bottom-actions">
+      <button class="btn primary big" id="scanBtn">Start demo scan</button>
+      <label class="btn ghost big file-btn">Upload scan file (STL / OBJ)<input type="file" id="fileInput" accept=".stl,.obj"></label>
+      <button class="btn link" id="skipCamBtn">No camera? Run simulated scan</button>
+    </div>
+  </section>
+
+  <!-- 3. FOOT PREVIEW -->
+  <section class="screen" id="s-preview" data-step="2">
+    <div class="row-between"><h2>Your 3D foot</h2><span class="tag" id="previewSource">Demo model</span></div>
+    <div class="viewer tall" id="footViewer"><div class="viewer-hint">Drag any direction to turn 360° · pinch / scroll to zoom</div></div>
+    <div class="view-ctrl">
+      <div class="seg small" id="pvSide"><button class="seg-btn" data-v="R">Right</button><button class="seg-btn" data-v="L">Left</button><button class="seg-btn active" data-v="both">Both</button></div>
+      <div class="view-presets" id="pvViews"><button data-view="top">Top</button><button data-view="bottom">Bottom</button><button data-view="inside">Inside</button><button data-view="outside">Outside</button><button data-view="back">Back</button><button data-view="front">Front</button><button data-view="spin" class="on">⟳ Spin</button></div>
+      <div class="view-toggles" id="pvLook"><button data-k="heat" class="on">🔥 Pressure</button><button data-k="wire">🕸 Mesh</button><button data-k="scan">✨ Scan look</button></div>
+    </div>
+    <div class="legend" id="pvLegend"><span>Low</span><div class="legend-bar"></div><span>High pressure</span></div>
+    <div class="feet-status" id="feetStatus"></div>
+    <div class="bottom-actions">
+      <button class="btn primary big" data-go="s-analysis">See foot analysis</button>
+      <button class="btn ghost" id="rescanBtn">Scan again</button>
+    </div>
+  </section>
+
+  <!-- 4. ANALYSIS -->
+  <section class="screen" id="s-analysis" data-step="3">
+    <h2>Your feet</h2>
+    <div class="compare" id="compareRow"></div>
+    <div class="seg small" id="analysisSideSeg"></div>
+    <div class="card">
+      <div class="metrics">
+        <div class="metric"><b id="mLen">–</b><span>Length</span></div>
+        <div class="metric"><b id="mWid">–</b><span>Width</span></div>
+        <div class="metric"><b id="mAhi">–</b><span class="staff-only">Arch index</span><span class="cust-only">Arch</span></div>
+        <div class="metric"><b id="mSize">–</b><span>Size</span></div>
+      </div>
+      <canvas id="footprintCanvas" width="300" height="420"></canvas>
+      <p class="tiny muted staff-only" id="metricSource">Demo values (simulated scan).</p>
+    </div>
+    <div class="card result-card">
+      <div class="arch-scale" id="archScale">
+        <span data-a="high">High</span><span data-a="normal">Normal</span><span data-a="low">Low</span><span data-a="flat">Flat</span>
+      </div>
+      <h3 id="archTitle">–</h3>
+      <p id="archExplain"></p>
+      <label class="field staff-only">Staff override
+        <select id="archOverride">
+          <option value="high">High arch (pes cavus)</option>
+          <option value="normal">Normal arch</option>
+          <option value="low">Low arch</option>
+          <option value="flat">Flat foot (pes planus)</option>
+        </select>
+      </label>
+      <div id="scanSuggest"></div>
+    </div>
+    <div class="bottom-actions"><button class="btn primary big" data-go="s-health">Next: a few quick questions</button><p class="tiny muted center">About 1 minute · tap to answer</p></div>
+  </section>
+
+  <!-- 5. QUESTIONS (one per screen) -->
+  <section class="screen" id="s-health" data-step="4">
+    <h2>A few quick questions</h2>
+    <p class="muted" style="margin-top:-6px">Tap what fits you – about 30 seconds.</p>
+    <div id="qForm"></div>
+    <div class="bottom-actions"><button class="btn primary big" id="seeResultsBtn">See my results ✨</button></div>
+    <div class="staff-only">
+      <h3 class="section-title">Staff: full checklist <small>(scan + answers, editable)</small></h3>
+      <div id="condList"></div>
+      <div class="card hidden" id="lldBox">
+        <b>Leg length difference</b>
+        <label class="field">Shorter leg
+          <select id="lldSide"><option value="left">Left</option><option value="right">Right</option></select></label>
+        <label class="field">Difference: <b id="lldVal">5</b> mm
+          <input type="range" id="lldMm" min="2" max="15" value="5"></label>
+        <p class="tiny muted">Insole lift is capped at 6 mm; more goes into the sole.</p>
+      </div>
+      <button class="btn ghost" data-go="s-products">Staff: skip to products</button>
+    </div>
+  </section>
+
+  <!-- 6. PRODUCTS -->
+  <section class="screen" id="s-products" data-step="5">
+    <h2>Choose your style</h2>
+    <p class="muted">Your custom support goes into any of these. Insoles can also be built into the flip-flop or slide.</p>
+    <div class="products" id="productList"></div>
+    <div class="bottom-actions"><button class="btn primary big" id="toResultBtn" disabled>Customise</button></div>
+  </section>
+
+  <!-- 7. RESULT -->
+  <section class="screen" id="s-result" data-step="6">
+    <div class="row-between"><h2 id="resultTitle">Your design</h2><span class="tag" id="resultSide"></span></div>
+    <div class="seg small" id="resultSideSeg"><button class="seg-btn" data-s="L">Left foot</button><button class="seg-btn active" data-s="R">Right foot</button></div>
+    <div class="viewer" id="productViewer"><div class="viewer-hint">Drag to rotate</div>
+      <button class="zones-toggle on" id="zonesToggle">Zones</button></div>
+    <div class="feet-summary" id="feetSummary"></div>
+    <div class="color-row" id="colorRow"></div>
+    <div class="color-row hidden" id="strapRow"></div>
+    <div class="card">
+      <label class="field staff-only">Arch type (staff, live)
+        <select id="archOverride2">
+          <option value="high">High arch (pes cavus)</option><option value="normal">Normal arch</option>
+          <option value="low">Low arch</option><option value="flat">Flat foot (pes planus)</option>
+        </select></label>
+      <label class="field">Size
+        <select id="sizeSel"></select></label>
+      <p class="tiny muted" id="dimsNote"></p>
+      <label class="field staff-only">3D model
+        <select id="templateSel"><option value="">Parametric model (flat bottom)</option><option value="L90">Fixifoot template L90 – full length</option><option value="S90">Fixifoot template S90 – 3/4 length</option></select></label>
+      <p class="tiny muted staff-only" id="templateNote">Templates are Jacky's own insole models (repaired, watertight), scaled to size with the rule-engine changes added on top. Insoles only.</p>
+      <label class="switch hidden" id="integrateWrap"><input type="checkbox" id="integrateChk" checked> Build custom orthotic footbed into the sole</label>
+    </div>
+    <h3 class="section-title">What we change, and why <small>(tap to see it on the 3D model)</small></h3>
+    <div id="zoneChips" class="zone-chips"></div>
+    <div id="condCards"></div>
+    <div class="staff-only"><h3 class="section-title">Staff: support settings</h3>
+    <div class="card"><table class="params" id="paramsTable"></table></div>
+    <div id="conflictBox"></div></div>
+    <p class="disclaimer small">Comfort product – not a medical diagnosis. See a podiatrist for diabetes or pain.</p>
+    <div class="bottom-actions"><button class="btn primary big" data-go="s-order">Looks great – continue</button></div>
+  </section>
+
+  <!-- 8. ORDER -->
+  <section class="screen" id="s-order" data-step="7">
+    <h2>Order summary</h2>
+    <div class="card summary" id="summaryCard"></div>
+    <div class="card"><h3>Your details</h3><label class="field">Name<input id="custName" autocomplete="name" placeholder="Full name"></label><label class="field">Mobile<input id="custPhone" inputmode="tel" autocomplete="tel" placeholder="09xx xxx xxxx"></label><p class="tiny muted">Saved on this device only (demo) so we can re-print without a new scan.</p></div>
+    <div class="card price">
+      <div class="row-between"><span>Price <span class="tag warn">example only</span></span><b id="priceTotal">₱–</b></div>
+      <div id="priceLines" class="tiny muted"></div>
+    </div>
+    <div class="bottom-actions">
+      <button class="btn primary big" id="orderBtn">Order my pair (demo)</button>
+      <div class="staff-only"><button class="btn ghost big" id="sendBtn">Staff: send to production</button>
+      <p class="tiny muted center">Downloads the production spec (JSON) and a print-ready STL per foot (mm, watertight, flat bottom on Z=0).</p></div>
+      <button class="btn ghost" id="restartBtn">New customer</button>
+    </div>
+  </section>
+
+  <!-- STAFF DASHBOARD -->
+  <section class="screen" id="s-staff" data-step="7">
+    <div class="row-between"><h2>Staff dashboard</h2><span class="tag" id="staffOrderTag">Demo</span></div>
+    <div class="staff-top"><button class="btn ghost" id="crmBtn">📇 Customers</button><button class="btn ghost" id="crmSaveBtn">💾 Save customer</button><button class="btn ghost" id="crmNewBtn">＋ New scan</button></div>
+    <div id="staffEmpty" class="card hidden"><b>No customer yet.</b><p class="muted">Scan a customer first, or load a demo customer to explore the staff tools.</p><button class="btn primary big" id="loadDemoBtn">Load demo customer</button></div>
+    <div id="staffBody">
+      <div class="staff-grid">
+        <div class="staff-col">
+          <div class="seg small" id="staffSideSeg"><button class="seg-btn" data-s="L">Left foot</button><button class="seg-btn active" data-s="R">Right foot</button></div>
+          <div class="viewer" id="staffViewer"><div class="viewer-hint">Drag to rotate · zones highlighted</div></div>
+          <div class="zone-chips" id="staffZoneChips" style="margin-top:10px"></div>
+          <div class="card">
+            <div class="staff-dl">
+              <button class="btn primary big" id="dlStlR">⬇ Download STL – Right</button>
+              <button class="btn primary big" id="dlStlL">⬇ Download STL – Left</button>
+              <button class="btn ghost big" id="dlSpec">⬇ Download spec (JSON)</button>
+            </div>
+            <p class="tiny muted" id="dlNote">STL: mm, watertight, Z-up. Parametric = flat bottom on Z=0.</p>
+          </div>
+        </div>
+        <div class="staff-col">
+          <div class="card"><h3>Customer</h3><div id="staffCustomer"></div></div>
+          <div class="card"><h3>Arch classification</h3><div id="staffArch"></div></div>
+          <div class="card"><h3>Detected problems</h3><div id="staffProblems" class="zone-chips"></div>
+            <details style="margin-top:10px"><summary class="tiny"><b>Edit checklist</b></summary><div id="staffCondList"></div></details></div>
+          <div class="card"><h3>Product &amp; model</h3>
+            <label class="field">Product<select id="staffProduct"></select></label>
+            <label class="field">3D model / template<select id="staffTemplate"><option value="">Parametric model (flat bottom)</option><option value="L90">Fixifoot template L90 – full length</option><option value="S90">Fixifoot template S90 – 3/4 length</option></select></label>
+          </div>
+          <div class="card"><h3>🎯 Scan-accurate fit</h3>
+            <button class="fit-badge na" id="fitBadge">Fit check</button>
+            <label class="switch hidden" id="tcWrap"><input type="checkbox" id="tcChk" checked> Total contact – top follows the scanned sole (2 mm map)</label>
+            <div id="afWrap" class="af-wrap"><div class="row-between"><span class="small">Arch fill</span><b class="small" id="afVal">100%</b></div><input type="range" id="afRange" min="70" max="100" step="5" value="100"><button class="linkbtn tiny" id="afAuto">Reset to auto (by condition)</button></div>
+            <div class="staff-top" style="margin-top:8px"><button class="btn ghost" id="fitBtn">📊 Fit check</button><button class="btn ghost hidden" id="alignBtn">🧭 Scan alignment</button></div>
+          </div>
+          <div class="card"><h3>Support settings</h3><table class="params" id="staffParams"></table></div>
+          <div class="card"><h3>🩺 Clinical rationale</h3><p class="tiny muted">Why each change is in this insole – in plain words, with the guideline it follows.</p><div id="staffRationale"></div></div>
+          <div id="staffConflicts"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- staff: scan alignment -->
+  <section class="screen" id="s-align">
+    <div class="row-between"><h2>Scan alignment</h2><span class="tag" id="alignSideTag">–</span></div>
+    <p class="muted small">Uploaded scan after automatic alignment. Grid = detected floor (plantar plane) · blue sheet = everything above it is trimmed (ankle/leg) · yellow arrow = heel → toe.</p>
+    <div class="align-grid">
+      <div>
+        <div class="viewer" id="alignViewer"><div class="viewer-hint">Drag to rotate freely</div></div>
+        <div class="view-presets" id="alignViews"><button data-view="iso">3D</button><button data-view="top">Top</button><button data-view="bottom">Bottom</button><button data-view="inside">Inside</button><button data-view="outside">Outside</button><button data-view="back">Back</button></div>
+        <div class="card"><h3>Manual nudge</h3><p class="tiny muted" id="alignNudge">No manual corrections</p>
+          <div class="nudge-btns" id="alignNudgeBtns">
+            <button class="btn ghost" data-n="swapEnds">⇅ Swap heel / toe</button><button class="btn ghost" data-n="upside">↕ Upside down</button><button class="btn ghost" data-n="mirror">⇄ Mirror left ↔ right</button>
+            <button class="btn ghost" data-n="pitch" data-v="-1">Pitch −1°</button><button class="btn ghost" data-n="pitch" data-v="1">Pitch +1°</button>
+            <button class="btn ghost" data-n="roll" data-v="-1">Roll −1°</button><button class="btn ghost" data-n="roll" data-v="1">Roll +1°</button>
+            <button class="btn ghost" data-n="yaw" data-v="-2">Yaw −2°</button><button class="btn ghost" data-n="yaw" data-v="2">Yaw +2°</button>
+            <button class="btn ghost" data-n="turn" data-v="1">⟲ Turn 90° (scan lying on its side)</button><button class="btn ghost" data-n="reset">↺ Reset</button>
+          </div>
+          <label class="field">Units<select id="alignUnit"><option value="">Auto-detect</option><option value="mm">Millimetres</option><option value="cm">Centimetres</option><option value="m">Metres</option></select></label>
+        </div>
+      </div>
+      <div>
+        <div class="card"><h3>Auto-detected</h3><table class="params" id="alignInfo"></table></div>
+        <div class="card"><h3>Plantar height map (2 mm)</h3><canvas id="alignCanvas" width="220" height="400" class="fit-canvas"></canvas><p class="tiny muted">Red = touching the floor, blue = arch / raised (0–22 mm).</p></div>
+      </div>
+    </div>
+    <div class="bottom-actions"><button class="btn primary big" id="alignOk">Use this alignment</button></div>
+  </section>
+
+  <!-- staff: fit check -->
+  <section class="screen" id="s-fit">
+    <div class="row-between"><h2>Fit check</h2><span class="tag" id="fitVerdict">–</span></div>
+    <p class="muted small" id="fitTitle"></p>
+    <div class="seg small" id="fitSideSeg"><button class="seg-btn" data-s="L">Left foot</button><button class="seg-btn" data-s="R">Right foot</button></div>
+    <div class="align-grid">
+      <div>
+        <div class="viewer" id="fitViewer"><div class="viewer-hint">Insole coloured by gap to the scanned sole</div></div>
+        <div class="view-presets" id="fitViews"><button data-view="iso">3D</button><button data-view="top">Top</button><button data-view="inside">Inside</button><button data-view="outside">Outside</button><button data-view="back">Back</button></div>
+        <label class="switch"><input type="checkbox" id="fitGhost" checked> Show scanned foot (ghost)</label>
+        <div class="gap-legend"><span><i style="background:#0b47a8"></i>air gap &gt;4</span><span><i style="background:#5cc2ff"></i>gap 1–4</span><span><i style="background:#27ae60"></i>±1 mm</span><span><i style="background:#f2c94c"></i>press 1–4</span><span><i style="background:#d63031"></i>press &gt;4 mm</span></div>
+      </div>
+      <div>
+        <div class="card"><h3>Deviation map (mm)</h3><canvas id="fitCanvas" width="240" height="440" class="fit-canvas"></canvas><p class="tiny muted">Gap = scanned plantar surface minus insole top after placing the foot (best fit offset + tilt). Hatched = intentional modification.</p></div>
+        <div class="card"><h3>Accuracy</h3><table class="params" id="fitStats"></table><div id="fitMods"></div><p class="small" id="fitNote"></p></div>
+      </div>
+    </div>
+    <div class="bottom-actions"><button class="btn ghost big" data-go="s-staff">← Back to dashboard</button></div>
+  </section>
+
+  <!-- CRM -->
+  <section class="screen" id="s-crm">
+    <div class="row-between"><h2>Customers</h2><span class="tag">On this device</span></div>
+    <input class="search" id="crmSearch" type="search" placeholder="Search name, phone or order no.">
+    <p class="tiny muted" id="crmCount"></p>
+    <div id="crmList"></div>
+    <div class="bottom-actions"><button class="btn ghost" data-go="s-staff">← Back to dashboard</button></div>
+  </section>
+
+  <div class="thanks hidden" id="thanks"><div class="thanks-card"><div class="confetti" id="confetti"></div><div class="big-emoji">🎉</div><h2>Thank you!</h2><p>Your custom pair is on its way to our print room. We'll message you when it's ready for fitting.</p><p class="tiny muted">Demo only – no real order was placed.</p><button class="btn primary big" id="thanksDone">Done</button></div></div>
+  <div class="toast" id="toast"></div>
+  <div class="sheet hidden" id="sheet"><div class="sheet-inner"><button class="icon-btn sheet-close" id="sheetClose">✕</button><div id="sheetBody"></div></div></div>
+</div>
+<script src="rules.js"></script>
+<script src="assets/foot-scan.js"></script>
+<script type="module" src="app.js"></script>
+<script>if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});</script>
+</body>
+</html>
