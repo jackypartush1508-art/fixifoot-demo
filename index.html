@@ -90,6 +90,7 @@
       <label class="btn primary big file-btn" id="uploadLbl"><span id="uploadTxt">Upload right foot scan</span><input type="file" id="fileInput" accept=".stl,.obj,.ply,model/stl,model/obj,application/octet-stream"></label>
       <p class="tiny muted center">STL, OBJ or PLY file · up to about 100 MB</p>
     </div>
+    <div class="card noscan-card" id="noScanCard"><h3>👟 No 3D scan yet?</h3><p class="small muted">Continue with your <b>shoe size or foot length</b>. You can order now – we add your scan later (free in the shop, or upload it) and check the fit before printing.</p><button class="btn ghost big" id="noScanBtn">Continue without scan →</button></div>
     <details class="card scan-how" id="scanHow" open><summary><b>How to scan with your phone</b></summary>
       <ol class="how small-how">
         <li><span>1</span><div>Open <b>KIRI Engine</b> (free) or another 3D-scan app and choose <i>Object / Photo scan</i>.</div></li>
@@ -224,6 +225,7 @@
   <section class="screen" id="s-order" data-step="7">
     <h2>Order summary</h2>
     <div class="card summary" id="summaryCard"></div>
+    <div class="card warn-card hidden" id="orderScanNote"><b>📷 Scan pending</b><p class="small">This order is based on your shoe size / foot length, so the fit is approximate. We'll contact you to scan your feet (free, takes 5 minutes in the shop or upload a phone scan) <b>before we print</b>.</p></div>
     <div class="card"><h3>Your details</h3><label class="field">Name<input id="custName" autocomplete="name" placeholder="Full name"></label><label class="field">Mobile<input id="custPhone" inputmode="tel" autocomplete="tel" placeholder="09xx xxx xxxx"></label><label class="field">Email <small class="muted">(optional – for your receipt)</small><input id="custEmail" type="email" inputmode="email" autocomplete="email" placeholder="name@example.com"></label><p class="tiny muted">We keep your scan and design on file so we can re-make your pair without a new scan.</p></div>
     <div class="card price">
       <div class="row-between"><span>Price <span class="tag warn hidden" id="priceTag">estimate</span></span><b id="priceTotal">₱–</b></div>
@@ -255,6 +257,7 @@
           <div class="viewer" id="staffViewer"><div class="viewer-hint">Drag to rotate · zones highlighted</div></div>
           <div class="zone-chips" id="staffZoneChips" style="margin-top:10px"></div>
           <div class="card">
+            <div class="warn-card hidden" id="approxWarn"><b>⚠ Approximate fit – scan recommended</b><p class="tiny">These print files are built from measurements (shoe size / foot length), not from a 3D scan. Files are named “-APPROX”. Use “Add scan later” on the customer card to regenerate them from a scan.</p></div>
             <div class="staff-dl">
               <button class="btn primary big" id="dlStlR">⬇ Download STL – Right</button>
               <button class="btn primary big" id="dlStlL">⬇ Download STL – Left</button>
@@ -375,6 +378,7 @@
           <label class="field">Tag<select id="fTag"><option value="">Any tag</option></select></label>
           <label class="field">Product<select id="fProduct"><option value="">Any product</option></select></label>
           <label class="field">Status<select id="fStatus"><option value="">Any status</option></select></label>
+          <label class="field">Scan<select id="fScan"><option value="">Any</option><option value="pending">📷 Scan pending</option><option value="scanned">Has 3D scan</option></select></label>
           <label class="field">From<input type="date" id="fFrom"></label>
           <label class="field">To<input type="date" id="fTo"></label>
           <button class="btn ghost" id="fClear">Clear filters</button>
@@ -392,7 +396,7 @@
     <div class="bottom-actions"><button class="btn ghost" data-go="s-staff">← Back to dashboard</button></div>
   </section>
 
-  <div class="thanks hidden" id="thanks"><div class="thanks-card"><div class="confetti" id="confetti"></div><div class="big-emoji">🎉</div><h2>Thank you!</h2><p>Your custom pair is on its way to our print room. We'll message you when it's ready for fitting.</p><p class="tiny muted" id="thanksNo"></p><div class="rc-btns" id="thanksReceipt"><button class="btn ghost" data-rc="download">🧾 Download receipt (PDF)</button><button class="btn ghost" data-rc="share">↗ Share</button><button class="btn ghost" data-rc="print">🖨 Print</button></div><button class="btn primary big" id="thanksDone">Done</button></div></div>
+  <div class="thanks hidden" id="thanks"><div class="thanks-card"><div class="confetti" id="confetti"></div><div class="big-emoji">🎉</div><h2>Thank you!</h2><p>Your custom pair is on its way to our print room. We'll message you when it's ready for fitting.</p><p class="tiny muted" id="thanksNo"></p><p class="small hidden" id="thanksScan">📷 <b>Scan pending:</b> we'll message you to scan your feet before printing.</p><div class="rc-btns" id="thanksReceipt"><button class="btn ghost" data-rc="download">🧾 Download receipt (PDF)</button><button class="btn ghost" data-rc="share">↗ Share</button><button class="btn ghost" data-rc="print">🖨 Print</button></div><button class="btn primary big" id="thanksDone">Done</button></div></div>
   <div class="toast" id="toast"></div>
   <div class="sheet hidden" id="sheet"><div class="sheet-inner"><button class="icon-btn sheet-close" id="sheetClose">✕</button><div id="sheetBody"></div></div></div>
 </div>

@@ -356,3 +356,27 @@ Database: migration `supabase/migrations/20261004190000_crm_status_tags.sql` add
 - indexes on status, created_at and tags
 
 RLS is unchanged: staff read/insert/update, admins delete, and anonymous users have no access. Screenshots `screenshots/v11-*.png` were taken with local sample data (Customer 01–08 plus one TEST customer to show it is left out of reports); no sample data was written to the cloud.
+
+## v11.1 (Oct 2026) – Continue without scan
+- **Customers** (no staff login needed) can tap **Continue without scan →** on the scan-upload screen. They then enter:
+  - shoe size in **EU / US Men / US Women / UK**, or foot length in **cm**. The size applies to both feet by default; tick "left foot is a different size" to enter each foot.
+  - optional width: narrow / normal / wide
+  - arch type (flat / normal / high), picked from simple footprint pictures
+- The flow then continues as usual: preview, analysis, questions, results and order. The 3D foot is labelled *"illustration from your measurements – scan pending"*, and the order screen and thank-you card explain that a scan will be taken before printing.
+- **Scan pending** marking:
+  - set on the order and the customer (feet source `self`; staff manual measurements count too)
+  - shown as a badge in the CRM list, on the board and in the order list
+  - **Scan** filter: pending / has 3D scan
+  - **📷 Needs scan** list in Reminders
+  - a column in the CSV / Excel exports
+- **Add scan** button on the customer card (also in Reminders):
+  - staff upload the STL/OBJ/PLY files (side detected automatically)
+  - the pending order's print files and spec are rebuilt from the scan, keeping the same order number and design
+  - the flag is cleared; when signed in to the cloud, the scan and the regenerated STLs are uploaded
+- **Staff print files from measurements** can still be downloaded. The dashboard shows "⚠ Approximate fit – scan recommended", file names end in `-APPROX`, and the spec carries `scanPending` and `fitWarning`.
+- **Database:** migration `supabase/migrations/20261004200000_scan_pending.sql` adds:
+  - `customers.scan_pending` and `orders.scan_pending` (boolean, default false), with partial indexes
+  - scan source `self`
+
+  RLS is unchanged.
+- Screenshots: `screenshots/v11.1-*.png`.

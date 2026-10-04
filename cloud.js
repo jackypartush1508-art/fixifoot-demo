@@ -56,7 +56,7 @@ export async function fetchCustomers() {
   const [cs, sc, os] = await Promise.all([
     sb.from('customers').select('*').order('updated_at', { ascending: false }).limit(500),
     sb.from('scans').select('id,customer_id,side,source,mesh_path,plantar_map,metrics,created_at').order('created_at', { ascending: false }).limit(2000),
-    sb.from('orders').select('id,order_no,customer_id,product,color,size,status,stl_paths,settings,design,price_php,payment_method,paid,discount,receipt_no,status_history,status_updated_at,created_at').order('created_at', { ascending: false }).limit(2000)]);
+    sb.from('orders').select('id,order_no,customer_id,product,color,size,status,stl_paths,settings,design,price_php,payment_method,paid,discount,receipt_no,status_history,status_updated_at,scan_pending,created_at').order('created_at', { ascending: false }).limit(2000)]);
   const C = must(cs), S = must(sc), O = must(os);
   return C.map(c => {
     const feet = {}, scanIds = {};
@@ -66,10 +66,10 @@ export async function fetchCustomers() {
       if (!feet[s.side]) { feet[s.side] = { ...s.metrics, side: s.side, source: s.source, ...(s.plantar_map ? { map: s.plantar_map } : {}), meshPath: s.mesh_path || null }; scanIds[s.side] = s.id; }
     }
     const p = c.profile || {}, sig = {}; for (const sd in feet) sig[sd] = scanSig(feet[sd]);
-    return { id: c.id, cloud: true, scanSig: sig, name: c.name, phone: c.phone || '', email: c.email || '', notes: c.notes || '', tags: c.tags || [], scanHistory, createdAt: c.created_at, updatedAt: c.updated_at,
+    return { id: c.id, cloud: true, scanSig: sig, name: c.name, phone: c.phone || '', email: c.email || '', notes: c.notes || '', tags: c.tags || [], scanPending: !!c.scan_pending, scanHistory, createdAt: c.created_at, updatedAt: c.updated_at,
       feet, scanIds, archOverride: p.archOverride || {}, qa: p.qa || {}, lld: p.lld, staffAdds: p.staffAdds || [], staffRemoves: p.staffRemoves || [], conditions: p.conditions || [], settings: p.settings || {},
       orders: O.filter(o => o.customer_id === c.id).map(o => ({ id: o.order_no, uuid: o.id, date: o.created_at, productId: o.settings?.productId || null, product: o.product, color: o.color, base: o.settings?.base || 'parametric', sides: o.settings?.sides || [], total: o.price_php ?? o.settings?.total ?? 0, by: o.settings?.by || 'staff', status: o.status, stlPaths: o.stl_paths || [], design: o.design || null, size: o.size || null, feetInfo: o.settings?.feetInfo || null,
-        statusHistory: o.status_history || [], statusAt: o.status_updated_at || null,
+        statusHistory: o.status_history || [], statusAt: o.status_updated_at || null, scanPending: !!o.scan_pending,
         payment: { method: o.payment_method || null, paid: !!o.paid, discount: +(o.discount || 0), receiptNo: o.receipt_no || null, notes: o.settings?.receipt?.notes || null, staffName: o.settings?.receipt?.staffName || null } })) };
   });
 }
@@ -77,7 +77,7 @@ export async function fetchCustomers() {
 export async function saveCustomerCloud(c, meshFiles = {}) {
   const sb = Cloud.client;
   const profile = { archOverride: c.archOverride, qa: c.qa, lld: c.lld, staffAdds: c.staffAdds, staffRemoves: c.staffRemoves, conditions: c.conditions, settings: c.settings };
-  must(await sb.from('customers').upsert({ id: c.id, name: c.name, phone: c.phone || null, email: c.email || null, notes: c.notes || null, tags: c.tags || [], profile }, { onConflict: 'id' }));
+  must(await sb.from('customers').upsert({ id: c.id, name: c.name, phone: c.phone || null, email: c.email || null, notes: c.notes || null, tags: c.tags || [], scan_pending: !!c.scanPending, profile }, { onConflict: 'id' }));
   c.scanSig ||= {}; c.scanIds ||= {};
   for (const side of ['R', 'L']) {
     const f = c.feet?.[side]; if (!f) continue;
@@ -86,7 +86,7 @@ export async function saveCustomerCloud(c, meshFiles = {}) {
     let mesh_path = meshPath || null;
     const scanId = crypto.randomUUID();
     if (meshFiles[side]) { mesh_path = `${c.id}/${scanId}-${side}.stl`; must(await sb.storage.from('scans').upload(mesh_path, meshFiles[side], { contentType: 'model/stl', upsert: false })); }
-    must(await sb.from('scans').insert({ id: scanId, customer_id: c.id, side, source: ['file', 'manual', 'sample'].includes(f.source) ? f.source : 'demo', mesh_path, plantar_map: map || null, metrics }));
+    must(await sb.from('scans').insert({ id: scanId, customer_id: c.id, side, source: ['file', 'manual', 'sample', 'self'].includes(f.source) ? f.source : 'demo', mesh_path, plantar_map: map || null, metrics }));
     c.scanSig[side] = sig; c.scanIds[side] = scanId; f.meshPath = mesh_path;
   }
   return c;
@@ -94,7 +94,7 @@ export async function saveCustomerCloud(c, meshFiles = {}) {
 export async function insertOrderCloud(c, o, spec, stls = []) {
   const sb = Cloud.client, paths = [];
   for (const s of stls) { const path = `${c.id}/${o.id}/${s.name}`; must(await sb.storage.from('stl').upload(path, new Blob([s.data], { type: 'model/stl' }), { contentType: 'model/stl', upsert: true })); paths.push(path); }
-  const row = { order_no: o.id, customer_id: c.id, product: o.product, color: o.color, size: spec?.size ? 'EU ' + spec.size.eu : null, problems: spec?.conditions || [],
+  const row = { order_no: o.id, scan_pending: !!o.scanPending, customer_id: c.id, product: o.product, color: o.color, size: spec?.size ? 'EU ' + spec.size.eu : null, problems: spec?.conditions || [],
     settings: { productId: o.productId, base: o.base, sides: o.sides, total: o.total, by: o.by, feetInfo: o.feetInfo || null, receipt: { notes: o.payment?.notes || null, staffName: o.payment?.staffName || null } }, spec: spec || null, stl_paths: paths,
     // v10: payment + receipt (migration 20261004180000_orders_payment)
     payment_method: o.payment?.method || null, paid: !!o.payment?.paid, discount: o.payment?.discount || 0, receipt_no: o.payment?.receiptNo || o.id,
@@ -110,6 +110,11 @@ export async function updateOrderPaymentCloud(orderNo, p) {
   if (!cur) return null; // not uploaded yet (e.g. saved while offline) – sent with the order upload
   const settings = { ...(cur.settings || {}), receipt: { notes: p.notes || null, staffName: p.staffName || null } };
   return must(await sb.from('orders').update({ payment_method: p.method || null, paid: !!p.paid, discount: p.discount || 0, receipt_no: p.receiptNo || orderNo, settings }).eq('order_no', orderNo).select('id'));
+}
+// v11.1: scan added later -> clear the pending flag on the order(s)
+export async function clearScanPendingCloud(orderNos) {
+  if (!orderNos.length) return [];
+  return must(await Cloud.client.from('orders').update({ scan_pending: false }).in('order_no', orderNos).select('order_no'));
 }
 // v11: order status pipeline – the server trigger appends {status, at, by} to status_history
 export async function updateOrderStatusCloud(orderNo, status) {

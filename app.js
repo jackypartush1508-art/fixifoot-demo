@@ -162,7 +162,7 @@ function mainFoot() { return state.feet[state.side] || Object.values(state.feet)
 function longestFoot() { return Object.values(state.feet).reduce((a, b) => (!a || b.length > a.length ? b : a), null); }
 
 /* ---------------- scan screen (v10: real 3D scan upload, right then left; staff: manual measurements / sample feet) ---------------- */
-const SRC_LABEL = { file: '3D scan', manual: 'manual measurements', sample: 'sample feet (test)', demo: 'sample feet (test)', generic: 'standard size' };
+const SRC_LABEL = { file: '3D scan', self: 'customer size (scan pending)', manual: 'manual measurements', sample: 'sample feet (test)', demo: 'sample feet (test)', generic: 'standard size' };
 const testMode = () => localStorage.getItem('fxStaffTest') === '1';
 function syncSideSeg() {
   $$('#scanSteps span').forEach(s => { const sd = s.dataset.side; s.classList.toggle('on', sd === state.side); s.classList.toggle('done', !!state.feet[sd]); });
@@ -223,6 +223,50 @@ $('#manualBtn').onclick = () => {
     toast(`Manual measurements saved (${good.map(v => sideName(v.sd)).join(' + ')})`); state.side = 'R';
     if (state.feet.R && state.feet.L) show('s-preview'); else { state.side = state.feet.R ? 'L' : 'R'; syncSideSeg(); }
   };
+};
+// v11.1: customer "Continue without scan" – shoe size / foot length + width + arch self-select (no staff login needed)
+const NEEDS_SCAN_SRC = ['self', 'manual'];
+const needsScanFeet = (feet = state.feet) => Object.values(feet || {}).some(f => NEEDS_SCAN_SRC.includes(f.source));
+const SIZE_UNITS = { eu: { label: 'EU', min: 19, max: 50, step: 0.5, ph: 'e.g. 42', toL: v => (v / 1.5 - 1.5) * 10 }, usm: { label: 'US Men', min: 1, max: 16, step: 0.5, ph: 'e.g. 9', toL: v => ((v + 33) / 1.5 - 1.5) * 10 },
+  usw: { label: 'US Women', min: 2, max: 14, step: 0.5, ph: 'e.g. 7', toL: v => ((v + 31.5) / 1.5 - 1.5) * 10 }, uk: { label: 'UK', min: 1, max: 15, step: 0.5, ph: 'e.g. 8', toL: v => ((v + 33.5) / 1.5 - 1.5) * 10 },
+  cm: { label: 'Foot length (cm)', min: 15, max: 33, step: 0.1, ph: 'e.g. 25.5', toL: v => v * 10 } };
+const WIDTH_K = { narrow: 0.365, normal: 0.39, wide: 0.42 };
+const archSvg = k => { const band = { flat: [14, 32], normal: [31, 15], high: [41, 6] }[k]; return `<svg viewBox="0 0 60 112" class="arch-pic" aria-hidden="true"><g fill="#0099ff"><ellipse cx="30" cy="34" rx="19" ry="20"/><ellipse cx="31" cy="92" rx="14" ry="17"/><rect x="${band[0]}" y="44" width="${band[1]}" height="40" rx="${Math.min(8, band[1] / 2)}"/><circle cx="17" cy="9" r="6"/><circle cx="29" cy="7" r="4.2"/><circle cx="38" cy="9" r="3.6"/><circle cx="45" cy="13" r="3.2"/><circle cx="50" cy="19" r="2.8"/></g></svg>`; };
+function selfFoot(side, L, widthKey, archType, entered) {
+  const csi = { high: 12, normal: 33, flat: 68 }[archType];
+  state.feet[side] = { side, source: 'self', archType, length: Math.round(L), width: Math.round(L * WIDTH_K[widthKey]), widthClass: widthKey, csi, ahi: { high: .37, normal: .34, flat: .29 }[archType], peakForefootPressure: .8, entered };
+  delete state.archOverride[side]; delete state.uploaded[side]; delete state.rawScans[side]; delete modelCache[side];
+}
+$('#noScanBtn').onclick = () => {
+  const prev = state.feet.R?.source === 'self' ? state.feet.R.entered : null, prevL = state.feet.L?.source === 'self' ? state.feet.L.entered : null;
+  const ns = { unit: prev?.unit || 'eu', width: state.feet.R?.widthClass || 'normal', arch: state.feet.R?.source === 'self' ? state.feet.R.archType : 'normal', diff: !!(prev && prevL && prev.value !== prevL.value) };
+  const draw = () => { const u = SIZE_UNITS[ns.unit];
+    sheet(`<h3>👟 Continue without scan</h3><p class="small muted" style="margin-top:-4px">Tell us your size – we build your insoles from it now and check the fit with a scan before printing.</p>
+      <h4 class="crm-h">1 · Your size</h4><div class="unit-seg" id="nsUnit">${Object.entries(SIZE_UNITS).map(([k, x]) => `<button class="${k === ns.unit ? 'on' : ''}" data-u="${k}">${k === 'cm' ? 'cm' : x.label}</button>`).join('')}</div>
+      <label class="field">${ns.diff ? 'Right foot' : 'Both feet'} – ${u.label}<input type="number" id="nsR" inputmode="decimal" min="${u.min}" max="${u.max}" step="${u.step}" placeholder="${u.ph}" value="${prev?.unit === ns.unit ? prev.value : ''}"></label>
+      <label class="switch"><input type="checkbox" id="nsDiff" ${ns.diff ? 'checked' : ''}> My left foot is a different size</label>
+      ${ns.diff ? `<label class="field">Left foot – ${u.label}<input type="number" id="nsL" inputmode="decimal" min="${u.min}" max="${u.max}" step="${u.step}" placeholder="${u.ph}" value="${prevL?.unit === ns.unit ? prevL.value : ''}"></label>` : ''}
+      ${ns.unit === 'cm' ? '<p class="tiny muted">Stand on paper, mark heel and longest toe, measure the distance.</p>' : '<p class="tiny muted">Use the size of shoes that fit you well.</p>'}
+      <h4 class="crm-h">2 · Foot width <span class="muted small">(optional)</span></h4><div class="unit-seg" id="nsWidth">${['narrow', 'normal', 'wide'].map(k => `<button class="${k === ns.width ? 'on' : ''}" data-w="${k}">${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>
+      <h4 class="crm-h">3 · Your arch</h4><p class="tiny muted" style="margin-top:-4px">Wet your foot and step on paper or a dry floor – which footprint looks most like yours?</p>
+      <div class="arch-pick" id="nsArch">${[['flat', 'Flat', 'Whole sole touches the floor'], ['normal', 'Normal', 'Half of the middle touches'], ['high', 'High', 'Only a thin outside line']].map(([k, n, d]) => `<button class="${k === ns.arch ? 'on' : ''}" data-a="${k}">${archSvg(k)}<b>${n}</b><small>${d}</small></button>`).join('')}</div>
+      <p class="tiny" id="nsMsg" style="color:#c0392b;min-height:1.2em"></p>
+      <button class="btn primary big" id="nsOk">Continue →</button><p class="tiny muted center">Fit from measurements is approximate – we recommend a scan before printing.</p>`);
+    const keep = () => { ns.vR = $('#nsR').value; ns.vL = $('#nsL')?.value; };
+    $$('#nsUnit button').forEach(b => b.onclick = () => { ns.unit = b.dataset.u; draw(); });
+    $$('#nsWidth button').forEach(b => b.onclick = () => { ns.width = b.dataset.w; keep(); $$('#nsWidth button').forEach(x => x.classList.toggle('on', x === b)); });
+    $$('#nsArch button').forEach(b => b.onclick = () => { ns.arch = b.dataset.a; $$('#nsArch button').forEach(x => x.classList.toggle('on', x === b)); });
+    $('#nsDiff').onchange = e => { keep(); ns.diff = e.target.checked; draw(); if (ns.vR) $('#nsR').value = ns.vR; };
+    $('#nsOk').onclick = () => {
+      const vR = +$('#nsR').value, vL = ns.diff ? +$('#nsL').value : vR;
+      const bad = v => !(v >= u.min && v <= u.max);
+      if (bad(vR) || bad(vL)) { $('#nsMsg').textContent = `Please enter a ${u.label} value between ${u.min} and ${u.max}.`; return; }
+      [['R', vR], ['L', vL]].forEach(([sd, v]) => selfFoot(sd, u.toL(v), ns.width, ns.arch, { unit: ns.unit, unitLabel: u.label, value: v, width: ns.width }));
+      $('#sheet').classList.add('hidden'); state.side = 'R';
+      toast(`Size saved – ${state.feet.R.length} mm foot length · scan pending`, 3200); show('s-preview');
+    };
+  };
+  draw();
 };
 // uploaded scans: auto-align (units, floor plane, heel/toe, left/right, trim ankle) -> 2 mm plantar map
 function objToGeo(obj) {
@@ -297,7 +341,7 @@ function renderFoot() {
   footViewer.medialX = sides.length === 1 && sides[0] === 'L' ? 1 : -1;
   const srcs = [...new Set(sides.map(s => state.feet[s].source))], allFile = srcs.every(x => x === 'file');
   $('#previewTitle').textContent = allFile ? 'Your 3D feet' : 'Your feet';
-  $('#previewSource').textContent = (sides.length > 1 ? 'Both feet' : sideName(sides[0]) + ' foot') + ' · ' + (allFile ? 'from your 3D scan' : srcs.includes('manual') ? 'illustration from measurements' : srcs.includes('file') ? 'scan + illustration' : 'sample feet – staff test');
+  $('#previewSource').textContent = (sides.length > 1 ? 'Both feet' : sideName(sides[0]) + ' foot') + ' · ' + (allFile ? 'from your 3D scan' : srcs.some(x => NEEDS_SCAN_SRC.includes(x)) ? 'illustration from your measurements – scan pending' : srcs.includes('file') ? 'scan + illustration' : 'sample feet – staff test');
   $$('#pvSide button').forEach(b => { b.classList.toggle('active', b.dataset.v === state.previewSide); b.disabled = b.dataset.v !== 'both' && !state.feet[b.dataset.v]; });
   $$('#pvLook button').forEach(b => b.classList.toggle('on', !!state.look[b.dataset.k]));
   $$('#pvViews button').forEach(b => b.classList.toggle('on', b.dataset.view === 'spin'));
@@ -333,6 +377,7 @@ function renderAnalysis() {
   $('#mAhi').textContent = state.staff ? f.ahi.toFixed(2) : R.ARCH_FRIENDLY[a].replace(' arch', '').replace(' feet', ''); $('#mSize').textContent = 'EU ' + sz.eu;
   $('#metricSource').textContent = f.source === 'file'
     ? `Measured from ${f.file}. Arch estimated from footprint contact (Chippaux-Smirak index ${f.csi}%). Arch height index is an estimate.`
+    : f.source === 'self' ? `From your ${esc(f.entered?.unitLabel || 'size')} ${esc(f.entered?.value ?? '')}${f.widthClass && f.widthClass !== 'normal' ? ' (' + f.widthClass + ')' : ''} – no 3D scan yet. Arch type chosen by you; the 3D foot is an illustration. Approximate fit – we recommend a scan before printing.`
     : f.source === 'manual' ? `Manual measurements entered by ${esc(f.enteredBy || 'staff')} (no 3D scan). Arch type chosen by staff; the 3D foot is an illustration. Size ≈ EU ${sz.eu} / US M ${sz.usM} / US W ${sz.usW}.`
     : `Sample feet (staff test – not a customer scan). Contact index (CSI) ${f.csi}%. Size ≈ EU ${sz.eu}.`;
   drawFootprint($('#footprintCanvas'), { archType: a, peak: f.peakForefootPressure, side: state.side, W: 100 });
@@ -541,7 +586,7 @@ function build3mfFor(side, id) {
   const r = dualPrint(side); if (!r) return null; const { p, dv, bodies } = r;
   const meta = { title: `${p.name} – ${sideName(side)} foot (${id})`, description: `${p.dual.look}. Two bodies assembled in place; extruder 1 = ${bodies[0].colorName} ${bodies[0].material}, extruder 2 = ${bodies[1].colorName} ${bodies[1].material}. Scan-fitted (Fixifoot).`,
     print: { model: p.name, orderId: id, side: sideName(side), ...(state.design ? { design: designSummary() } : {}), ...(dv.engraving ? { engraving: dv.engraving } : {}), ...p.print, base: `Extruder 1 – ${bodies[0].colorName} ${bodies[0].material} (${bodies[0].name})`, top: `Extruder 2 – ${bodies[1].colorName} ${bodies[1].material} (${bodies[1].name})`, singleMaterialProfile: { base: p.print?.base, top: p.print?.top }, dualMaterial: { look: p.dual.look, bodies: bodies.map(b => ({ name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill, volumeCm3: +(b.volumeMm3 / 1000).toFixed(1) })), interface: 'shared surface – no gap / overlap', stats: dv.stats } } };
-  return { name: `${id}-${p.id}-2material-${sideName(side).toLowerCase()}.3mf`, data: build3MF(bodies, meta), bodies, stats: dv.stats };
+  return { name: `${id}-${p.id}-2material-${sideName(side).toLowerCase()}${NEEDS_SCAN_SRC.includes(state.feet[side]?.source) ? '-APPROX' : ''}.3mf`, data: build3MF(bodies, meta), bodies, stats: dv.stats };
 }
 function bodyStls(side, id) { const r = dualPrint(side); if (!r) return []; return r.bodies.map(b => ({ name: `${id}-${r.p.id}-${b.id}-${b.colorName.toLowerCase().replace(/[^a-z]+/g, '-')}-ext${b.extruder}-${sideName(side).toLowerCase()}.stl`, data: new STLExporter().parse(new THREE.Mesh(b.geometry), { binary: true }) })); }
 const creasedCache = new WeakMap();
@@ -682,7 +727,7 @@ function ensureProduct() { if (!state.product) { state.product = R.PRODUCTS.find
 function buildStl(side, id) {
   const p = ensureProduct(), sp = currentSpec(side), md = scanModel(side);
   const useTpl = !!(state.base && tplKind(p) && templateCache[state.base]);
-  const name = `${id}-${p.id}-${p.kind === 'insole' ? 'insole' : 'sole'}-${sideName(side).toLowerCase()}.stl`;
+  const name = `${id}-${p.id}-${p.kind === 'insole' ? 'insole' : 'sole'}-${sideName(side).toLowerCase()}${NEEDS_SCAN_SRC.includes(state.feet[side]?.source) ? '-APPROX' : ''}.stl`;
   if (md && (useTpl || p.kind === 'insole' || state.integrate)) {
     // scan-accurate path: total-contact sole / morphed template, converted to Z-up, Z=0, outward normals
     const obj = productObject(side, sp, { display: false, openings: true }), A = obj.userData?.anchors;
@@ -716,7 +761,7 @@ function buildSpec(id, stlInfos = []) {
   const p = ensureProduct(), feet = Object.keys(state.feet);
   const perFoot = feet.map(s => { const sp = currentSpec(s); return { side: sideName(s), scan: { ...state.feet[s], map: state.feet[s].map ? `${state.feet[s].map.nx}×${state.feet[s].map.nz} plantar height map @ ${state.feet[s].map.res} mm (stored)` : null, plantar: undefined }, totalContact: !!sp.totalContact, archType: sp.archType, params: sp.params, clinicalRationale: R.rationale(sp, { totalContact: sp.totalContact, scanArchH: sp.scanArchH }).map(r => ({ title: r.title, value: r.value, why: r.why, sources: r.refs.map(x => x.url) })), zones: sp.zones.map(z => ({ id: z.id, label: z.label, reasons: z.reasons })), notes: sp.notes, conflicts: sp.conflicts }; });
   const spec = currentSpec(), lines = priceLines(spec);
-  return { orderId: id, brand: 'Fixifoot Philippines', feetSource: Object.fromEntries(feet.map(s => [sideName(s), SRC_LABEL[state.feet[s].source] || state.feet[s].source])), testData: feet.some(s => ['sample', 'demo'].includes(state.feet[s].source)) || undefined, createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && tplKind(p)) ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
+  return { orderId: id, brand: 'Fixifoot Philippines', feetSource: Object.fromEntries(feet.map(s => [sideName(s), SRC_LABEL[state.feet[s].source] || state.feet[s].source])), testData: feet.some(s => ['sample', 'demo'].includes(state.feet[s].source)) || undefined, scanPending: needsScanFeet() || undefined, fitWarning: needsScanFeet() ? 'Approximate fit – scan recommended. Built from measurements (shoe size / foot length), not from a 3D scan.' : undefined, createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && tplKind(p)) ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
     size: sizeFromLength(longestFoot().length), questionnaire: state.answers, questionnaireRaw: state.qa, conditions: spec.conditions, feet: perFoot,
     examplePrice: { currency: 'PHP', lines, total: lines.reduce((s, l) => s + l[1], 0), note: state.design ? 'product price (configurable per product)' : 'estimate' },
     design: state.design ? designSummary() : null,
@@ -742,7 +787,7 @@ $('#orderBtn').onclick = () => {
   if (!name) { toast('Please enter your name'); $('#custName').focus(); return; }
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { toast('Please check your email address'); $('#custEmail').focus(); return; }
   const id = newOrderId(); saveCurrentCustomer(name, phone, email); recordOrder(id, state.staff ? 'staff' : 'customer', null, [], state.staff ? payFromForm() : null);
-  lastOrder = { customerId: state.customerId, orderId: id }; $('#thanksNo').textContent = 'Order no. ' + id;
+  lastOrder = { customerId: state.customerId, orderId: id }; $('#thanksNo').textContent = 'Order no. ' + id; $('#thanksScan').classList.toggle('hidden', !needsScanFeet());
   $('#thanks').classList.remove('hidden');
   const cf = $('#confetti'); cf.innerHTML = Array.from({ length: 40 }, (_, i) => `<i style="left:${Math.random() * 100}%;background:${['#0099ff', '#ffd22e', '#015ad8', '#5cc2ff', '#162327'][i % 5]};animation-delay:${Math.random() * 0.8}s"></i>`).join('');
 };
@@ -821,6 +866,7 @@ function loadDemoCustomer() {
 $('#loadDemoBtn').onclick = loadDemoCustomer;
 $('#emptyScanBtn').onclick = () => $('#crmNewBtn').click();
 function renderStaff(keepView = true) {
+  $('#approxWarn')?.classList.toggle('hidden', !needsScanFeet());
   renderSettings(); syncTestMode();
   const has = Object.keys(state.feet).length > 0;
   $('#staffEmpty').classList.toggle('hidden', has); $('#staffBody').classList.toggle('hidden', !has);
@@ -891,7 +937,7 @@ function renderStaff(keepView = true) {
     <tr><td>Interface</td><td>shared surface – no gap / overlap; both bodies watertight</td></tr><tr><td>Features</td><td>${dv.stats.openings ? dv.stats.openings + ' ' + (dv.stats.tilesMode === 'holes' ? 'holes' : 'windows/cells') : ''}${dv.stats.inserts.length ? dv.stats.inserts.map(i => esc(i.label)).join(', ') : ''}${!dv.stats.openings && !dv.stats.inserts.length ? 'layered' : ''}</td></tr>
     <tr><td>Min thickness</td><td>${Object.entries(dv.stats.minThicknessMm).map(([k, v]) => k + ' ' + v + ' mm').join(' · ')}</td></tr></table>${p.actual ? `<figure class="print-prev"><img src="${p.actual}" alt="2-material print preview"><figcaption class="tiny muted">2-material preview rendered from the actual print files</figcaption></figure>` : ''}` : ''; }
   $('#dlStlL').textContent = `⬇ Download STL – Left${state.feet.L ? '' : ' (mirrored)'}`; $('#dlStlR').textContent = `⬇ Download STL – Right${state.feet.R ? '' : ' (mirrored)'}`;
-  $('#dlNote').textContent = (spec.totalContact ? (useTpl ? `Template ${state.base} morphed to the scan (non-uniform warp + top conformed to the plantar map): watertight, mm, Z-up, Z=0 bottom.` : 'Total contact from the 2 mm plantar map: watertight, mm, Z-up, flat bottom on Z=0.') : useTpl ? `Template ${state.base}: watertight, mm, Z-up, curved bottom like the original.` : 'Parametric: watertight, mm, Z-up, flat bottom on Z=0.') + (p.kind !== 'insole' ? ' Sole only – strap/upper separate.' : '');
+  $('#dlNote').textContent = needsScanFeet() ? 'Built from measurements (no 3D scan): the sole follows a typical foot of this length, width and arch – approximate fit. Watertight, mm, Z-up, flat bottom on Z=0.' : (spec.totalContact ? (useTpl ? `Template ${state.base} morphed to the scan (non-uniform warp + top conformed to the plantar map): watertight, mm, Z-up, Z=0 bottom.` : 'Total contact from the 2 mm plantar map: watertight, mm, Z-up, flat bottom on Z=0.') : useTpl ? `Template ${state.base}: watertight, mm, Z-up, curved bottom like the original.` : 'Parametric: watertight, mm, Z-up, flat bottom on Z=0.') + (p.kind !== 'insole' ? ' Sole only – strap/upper separate.' : '');
 }
 $('#tcChk').onchange = e => { state.totalContact = e.target.checked; renderStaff(); toast(state.totalContact ? 'Total contact ON – follows the scanned sole' : 'Total contact OFF – parametric arch'); };
 $('#afRange').oninput = e => { state.archFill = +e.target.value; renderStaff(); };
@@ -987,8 +1033,8 @@ $('#openDia').onchange = e => { state.openings.d = +e.target.value; renderStaff(
 $('#staffTemplate').onchange = async e => { state.base = e.target.value; if (state.base) { try { toast('Loading template…'); await loadTemplate(state.base); } catch (err) { toast('Could not load template: ' + err.message); state.base = ''; } } renderStaff(false); };
 let staffOrderId = null;
 const getStaffOrderId = () => (staffOrderId ||= newOrderId());
-$('#dlStlR').onclick = () => { const s = buildStl('R', getStaffOrderId()); download(s.name, s.data, 'model/stl'); toast('Right STL downloaded (' + s.info.sizeMm.join(' × ') + ' mm)'); };
-$('#dlStlL').onclick = () => { const s = buildStl('L', getStaffOrderId()); download(s.name, s.data, 'model/stl'); toast('Left STL downloaded (' + s.info.sizeMm.join(' × ') + ' mm)'); };
+$('#dlStlR').onclick = () => { const s = buildStl('R', getStaffOrderId()); download(s.name, s.data, 'model/stl'); toast('Right STL downloaded (' + s.info.sizeMm.join(' × ') + ' mm)' + (needsScanFeet() ? ' · ⚠ approximate fit – scan recommended' : ''), needsScanFeet() ? 4500 : undefined); };
+$('#dlStlL').onclick = () => { const s = buildStl('L', getStaffOrderId()); download(s.name, s.data, 'model/stl'); toast('Left STL downloaded (' + s.info.sizeMm.join(' × ') + ' mm)' + (needsScanFeet() ? ' · ⚠ approximate fit – scan recommended' : ''), needsScanFeet() ? 4500 : undefined); };
 $('#dl3mfR').onclick = () => dl3mf('R'); $('#dl3mfL').onclick = () => dl3mf('L');
 function dl3mf(side) { const r = build3mfFor(side, getStaffOrderId()); if (!r) return toast('2-material export is for the Fixifoot insole line'); download(r.name, r.data, 'model/3mf'); toast(`2-material 3MF (${sideName(side)}) downloaded – ${r.bodies.map(b => b.colorName + ' → extruder ' + b.extruder).join(', ')}`, 4000); }
 $('#dlBodiesR').onclick = () => dlBodies('R'); $('#dlBodiesL').onclick = () => dlBodies('L');
@@ -1032,7 +1078,7 @@ function saveCurrentCustomer(name, phone, email) {
   if (!c) { c = { id: newCustId(), createdAt: now, orders: [] }; list.unshift(c); }
   Object.assign(c, { name: name || c.name || 'Walk-in customer', phone: phone ?? c.phone ?? '', email: email ?? c.email ?? '', updatedAt: now }, snapshot());
   // v11: keep a dated scan history (one entry per distinct scan)
-  c.scanHistory = c.scanHistory || []; c.tags = c.tags || [];
+  c.scanHistory = c.scanHistory || []; c.tags = c.tags || []; c.scanPending = needsScanFeet();
   for (const [sd, f] of Object.entries(state.feet)) { const sig = scanSig(f); if (!c.scanHistory.some(h => h.sig === sig)) c.scanHistory.push({ sig, side: sd, source: f.source, file: f.file || null, length: f.length, width: f.width, archType: f.archType, csi: f.csi, peakForefootPressure: f.peakForefootPressure, date: now }); }
   state.customerId = c.id; crmSave(list);
   if (cloudOn()) { const files = rawMeshFiles(); cloudJob('save', () => saveCustomerCloud(c, files)); }
@@ -1043,7 +1089,7 @@ function recordOrder(id, by, spec = null, stls = [], pay = null) {
   if (!c) { c = saveCurrentCustomer($('#custName')?.value.trim() || 'Walk-in customer', $('#custPhone')?.value.trim() || '', $('#custEmail')?.value.trim() || ''); return recordOrder(id, by, spec, stls, pay); }
   const p = ensureProduct(), lines = priceLines(currentSpec());
   Object.assign(c, snapshot(), { updatedAt: new Date().toISOString() });
-  c.orders = c.orders || []; if (!c.orders.some(o => o.id === id)) c.orders.unshift({ id, date: new Date().toISOString(), productId: p.id, product: p.name, color: state.color, base: state.base || 'parametric', sides: Object.keys(state.feet), total: lines.reduce((s, l) => s + l[1], 0), by, status: 'new', statusHistory: [{ status: 'new', at: new Date().toISOString(), by: (state.staff ? staffName() : null) || by }], ...(state.design ? { design: designSummary() } : {}),
+  c.orders = c.orders || []; if (!c.orders.some(o => o.id === id)) c.orders.unshift({ id, date: new Date().toISOString(), productId: p.id, product: p.name, color: state.color, base: state.base || 'parametric', sides: Object.keys(state.feet), total: lines.reduce((s, l) => s + l[1], 0), by, scanPending: needsScanFeet(), status: 'new', statusHistory: [{ status: 'new', at: new Date().toISOString(), by: (state.staff ? staffName() : null) || by }], ...(state.design ? { design: designSummary() } : {}),
     feetInfo: Object.fromEntries(Object.keys(state.feet).map(s => [s, { length: state.feet[s].length, source: state.feet[s].source }])), size: 'EU ' + sizeFromLength(productDims(longestFoot().side).footL).eu,
     payment: { method: pay?.method || null, paid: !!pay?.paid, discount: pay?.discount || 0, notes: pay?.notes || null, staffName: pay?.staffName || (state.staff ? staffName() : null) || null, receiptNo: id } });
   crmSave(list);
@@ -1111,10 +1157,11 @@ const dayKey = iso => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila'
 const daysAgo = iso => (Date.now() - new Date(iso).getTime()) / 864e5;
 const dShort = iso => new Date(iso).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
 let crmTab = 'customers', ordView = 'board';
-function crmFilters() { return { q: ($('#crmSearch').value || '').toLowerCase().trim(), tag: $('#fTag').value, product: $('#fProduct').value, status: $('#fStatus').value, from: $('#fFrom').value, to: $('#fTo').value }; }
+function crmFilters() { return { q: ($('#crmSearch').value || '').toLowerCase().trim(), tag: $('#fTag').value, product: $('#fProduct').value, status: $('#fStatus').value, scan: $('#fScan').value, from: $('#fFrom').value, to: $('#fTo').value }; }
 function orderMatch(c, o, F, useQ = true) {
   if (useQ && F.q && ![c.name, c.phone, c.email, c.id, o.id, o.product].join(' ').toLowerCase().includes(F.q)) return false;
   if (F.tag && !(c.tags || []).includes(F.tag)) return false;
+  if (F.scan && (F.scan === 'pending') !== !!(o.scanPending || custScanPending(c))) return false;
   if (F.product && o.productId !== F.product) return false;
   if (F.status && ordStatus(o) !== F.status) return false;
   const k = dayKey(o.date); if (F.from && k < F.from) return false; if (F.to && k > F.to) return false;
@@ -1123,7 +1170,8 @@ function orderMatch(c, o, F, useQ = true) {
 function custMatch(c, F) {
   if (F.q && ![c.name, c.phone, c.email, c.id, (c.tags || []).join(' '), ...(c.orders || []).map(o => o.id + ' ' + o.product)].join(' ').toLowerCase().includes(F.q)) return false;
   if (F.tag && !(c.tags || []).includes(F.tag)) return false;
-  if (F.product || F.status || F.from || F.to) return (c.orders || []).some(o => orderMatch(c, o, { ...F, tag: '' }, false));
+  if (F.scan && (F.scan === 'pending') !== custScanPending(c)) return false;
+  if (F.product || F.status || F.from || F.to) return (c.orders || []).some(o => orderMatch(c, o, { ...F, tag: '', scan: '' }, false));
   return true;
 }
 const allOrders = (list = crmAll()) => list.flatMap(c => (c.orders || []).map(o => ({ c, o }))).sort((a, b) => new Date(b.o.date) - new Date(a.o.date));
@@ -1131,7 +1179,7 @@ function fillFilterOptions(list) {
   const keepSel = (sel, opts) => { const v = sel.value; sel.innerHTML = sel.options[0].outerHTML + opts.map(([k, n]) => `<option value="${esc(k)}">${esc(n)}</option>`).join(''); sel.value = opts.some(o => o[0] === v) ? v : ''; };
   const tags = [...new Set([...TAG_PRESETS, ...list.flatMap(c => c.tags || [])])];
   keepSel($('#fTag'), tags.map(t => [t, t])); keepSel($('#fProduct'), R.PRODUCTS.map(p => [p.id, p.name])); keepSel($('#fStatus'), STATUSES);
-  const F = crmFilters(), n = ['tag', 'product', 'status', 'from', 'to'].filter(k => F[k]).length; $('#crmFilterInfo').textContent = n ? `· ${n} active` : '';
+  const F = crmFilters(), n = ['tag', 'product', 'status', 'scan', 'from', 'to'].filter(k => F[k]).length; $('#crmFilterInfo').textContent = n ? `· ${n} active` : '';
 }
 function readyOverdue(list = crmAll()) { return allOrders(list).filter(({ o }) => ordStatus(o) === 'ready' && daysAgo(statusSince(o)) > 3); }
 function replacementDue(list = crmAll()) {
@@ -1144,7 +1192,7 @@ function renderCRM() {
   $$('#crmTabs button').forEach(b => b.classList.toggle('on', b.dataset.t === crmTab));
   $$('#s-crm .crm-panel').forEach(p => p.classList.toggle('hidden', p.dataset.p !== crmTab));
   $('#crmFilters').classList.toggle('hidden', crmTab === 'reminders');
-  const remN = readyOverdue(list).length + replacementDue(list).length; $('#remBadge').textContent = remN ? remN : '';
+  const remN = readyOverdue(list).length + replacementDue(list).length + list.filter(custScanPending).length; $('#remBadge').textContent = remN ? remN : '';
   const where = cloudOn() ? `in Supabase cloud · signed in as ${esc(Cloud.profile.email)} (${Cloud.profile.role}) <span id="crmSync"></span>` : Cloud.configured ? 'saved on this device (offline / not signed in)' : 'saved on this device';
   if (crmTab === 'customers') {
     const hits = list.filter(c => custMatch(c, F));
@@ -1153,7 +1201,7 @@ function renderCRM() {
       const feet = ['R', 'L'].filter(s => c.feet?.[s]).map(s => `${s}: ${R.ARCH_TYPES[c.archOverride?.[s] || c.feet[s].archType]?.short} · ${c.feet[s].length} mm`).join(' &nbsp;|&nbsp; ');
       const last = (c.orders || [])[0];
       return `<div class="crm-item ${c.id === state.customerId ? 'on' : ''}" data-id="${esc(c.id)}"><div class="crm-av">${esc((c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase())}</div>
-        <div class="crm-main"><b>${esc(c.name)}</b><span>${esc(c.phone || 'no phone')} · ${(c.orders || []).length} order(s)${last ? ` · <i class="st st-${ordStatus(last)}">${stLabel(ordStatus(last))}</i>` : ''}</span><small>${feet || 'no scan'}</small>${(c.tags || []).length ? `<span class="tagrow">${c.tags.map(t => `<i class="ctag ctag-${esc(t.toLowerCase())}">${esc(t)}</i>`).join('')}</span>` : ''}</div><span class="crm-go">›</span></div>`;
+        <div class="crm-main"><b>${esc(c.name)}</b><span>${esc(c.phone || 'no phone')} · ${(c.orders || []).length} order(s)${last ? ` · <i class="st st-${ordStatus(last)}">${stLabel(ordStatus(last))}</i>` : ''}${custScanPending(c) ? ' · <i class="st st-pending">📷 Scan pending</i>' : ''}</span><small>${feet || 'no scan'}</small>${(c.tags || []).length ? `<span class="tagrow">${c.tags.map(t => `<i class="ctag ctag-${esc(t.toLowerCase())}">${esc(t)}</i>`).join('')}</span>` : ''}</div><span class="crm-go">›</span></div>`;
     }).join('') : '<p class="muted center">No customers found.</p>';
     $$('#crmList .crm-item').forEach(el => el.onclick = () => openCustomer(el.dataset.id));
   }
@@ -1169,13 +1217,13 @@ function renderOrders(list, F, where) {
   $('#ordBoard').classList.toggle('hidden', ordView !== 'board'); $('#ordList').classList.toggle('hidden', ordView !== 'list');
   const card = ({ c, o }) => { const st = ordStatus(o), i = PIPE.indexOf(st), d = Math.floor(daysAgo(statusSince(o)));
     return `<div class="kb-card${st === 'ready' && d > 3 ? ' late' : ''}" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="kb-top"><b>${esc(c.name)}</b><span>${peso(orderNet(o))}</span></div>
-      <small>${esc(o.id)} · ${esc(o.product)}</small><small class="muted">${dShort(o.date)} · ${d < 1 ? 'today' : d + ' d'} in status${o.payment?.paid ? ' · ✅ paid' : ''}</small>
+      <small>${esc(o.id)} · ${esc(o.product)}${o.scanPending ? ' <i class="st st-pending">📷 Scan pending</i>' : ''}</small><small class="muted">${dShort(o.date)} · ${d < 1 ? 'today' : d + ' d'} in status${o.payment?.paid ? ' · ✅ paid' : ''}</small>
       <div class="kb-move">${i > 0 ? `<button class="btn ghost" data-mv="${PIPE[i - 1]}" title="Back to ${stLabel(PIPE[i - 1])}">◀</button>` : '<span></span>'}${st !== 'cancelled' && st !== 'delivered' ? `<button class="btn ghost kb-x" data-mv="cancelled" title="Cancel order">✕</button>` : st === 'cancelled' ? `<button class="btn ghost" data-mv="new" title="Re-open">↺</button>` : ''}${i >= 0 && i < PIPE.length - 1 ? `<button class="btn primary" data-mv="${PIPE[i + 1]}">${stLabel(PIPE[i + 1])} ▶</button>` : '<span></span>'}</div></div>`; };
   if (ordView === 'board') {
     $('#ordBoard').innerHTML = STATUSES.map(([k, n]) => { const col = rows.filter(r => ordStatus(r.o) === k); return `<div class="kb-col kb-${k}" data-st="${k}"><div class="kb-h"><b>${n}</b><span>${col.length}</span></div>${col.map(card).join('') || '<p class="tiny muted center">–</p>'}</div>`; }).join('');
     $$('#ordBoard .kb-card').forEach(el => { el.onclick = e => { const b = e.target.closest('[data-mv]'); if (b) { e.stopPropagation(); setOrderStatus(el.dataset.cid, el.dataset.oid, b.dataset.mv); } else openCustomer(el.dataset.cid); }; });
   } else {
-    $('#ordList').innerHTML = rows.length ? `<div class="ord-rows">${rows.map(({ c, o }) => `<div class="ord-row" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="ord-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ${dShort(o.date)}</small><br><small class="muted">${peso(orderNet(o))} · ${o.payment?.paid ? '✅ paid' + (o.payment.method ? ' (' + esc(o.payment.method) + ')' : '') : 'unpaid'} · since ${fmtDate(statusSince(o))}</small></div>
+    $('#ordList').innerHTML = rows.length ? `<div class="ord-rows">${rows.map(({ c, o }) => `<div class="ord-row" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="ord-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ${dShort(o.date)}${o.scanPending ? ' <i class="st st-pending">📷 Scan pending</i>' : ''}</small><br><small class="muted">${peso(orderNet(o))} · ${o.payment?.paid ? '✅ paid' + (o.payment.method ? ' (' + esc(o.payment.method) + ')' : '') : 'unpaid'} · since ${fmtDate(statusSince(o))}</small></div>
       <select class="st-sel st-${ordStatus(o)}">${STATUSES.map(([k, n]) => `<option value="${k}" ${k === ordStatus(o) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>`).join('')}</div>` : '<p class="muted center">No orders match.</p>';
     $$('#ordList .ord-row').forEach(el => { el.querySelector('select').onchange = e => setOrderStatus(el.dataset.cid, el.dataset.oid, e.target.value); el.querySelector('.ord-main').onclick = () => openCustomer(el.dataset.cid); });
   }
@@ -1190,12 +1238,14 @@ async function setOrderStatus(cid, oid, st) {
   if (!$('#sheet').classList.contains('hidden') && $('#sheet').dataset.cid === cid) openCustomer(cid);
 }
 function renderReminders(list) {
-  const due = replacementDue(list), late = readyOverdue(list);
+  const due = replacementDue(list), late = readyOverdue(list), needScan = list.filter(custScanPending);
   const tel = c => c.phone ? `<a class="btn ghost" href="tel:${esc(c.phone.replace(/[^\d+]/g, ''))}">📞 Call</a><a class="btn ghost" href="sms:${esc(c.phone.replace(/[^\d+]/g, ''))}">💬 SMS</a>` : '<span class="tiny muted">no phone</span>';
-  $('#remList').innerHTML = `<div class="card"><h3>📦 Ready but not picked up (&gt; 3 days) <span class="tag">${late.length}</span></h3>${late.length ? late.map(({ c, o }) => `<div class="rem-row" data-cid="${esc(c.id)}"><div class="rem-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ready since ${dShort(statusSince(o))} (<b>${Math.floor(daysAgo(statusSince(o)))} days</b>)</small></div><div class="rem-act">${tel(c)}<button class="btn primary" data-pick="${esc(o.id)}">Delivered ✓</button></div></div>`).join('') : '<p class="muted small">Nothing waiting – all ready orders were collected within 3 days.</p>'}</div>
+  $('#remList').innerHTML = `<div class="card"><h3>📷 Needs scan <span class="tag">${needScan.length}</span></h3><p class="tiny muted">Ordered from shoe size / measurements – scan the feet before printing for the best fit.</p>${needScan.length ? needScan.map(c => { const po = (c.orders || []).find(o => o.scanPending); return `<div class="rem-row" data-cid="${esc(c.id)}"><div class="rem-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${po ? esc(po.id) + ' · ' + esc(po.product) + ' · ordered ' + dShort(po.date) : 'no order yet'} · ${esc([...new Set(Object.values(c.feet || {}).map(f => SRC_LABEL[f.source] || f.source))].join(', '))}</small></div><div class="rem-act">${tel(c)}<button class="btn primary" data-addscan="1">📷 Add scan</button></div></div>`; }).join('') : '<p class="muted small">Every customer has a 3D scan.</p>'}</div>
+    <div class="card"><h3>📦 Ready but not picked up (&gt; 3 days) <span class="tag">${late.length}</span></h3>${late.length ? late.map(({ c, o }) => `<div class="rem-row" data-cid="${esc(c.id)}"><div class="rem-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ready since ${dShort(statusSince(o))} (<b>${Math.floor(daysAgo(statusSince(o)))} days</b>)</small></div><div class="rem-act">${tel(c)}<button class="btn primary" data-pick="${esc(o.id)}">Delivered ✓</button></div></div>`).join('') : '<p class="muted small">Nothing waiting – all ready orders were collected within 3 days.</p>'}</div>
     <div class="card"><h3>🔁 Replacement due (last order 6–12 months ago) <span class="tag">${due.length}</span></h3><p class="tiny muted">Insoles usually need replacing after 6–12 months of daily use.</p>${due.length ? due.map(({ c, o, age }) => `<div class="rem-row" data-cid="${esc(c.id)}"><div class="rem-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>last: ${esc(o.product)} · ${dShort(o.date)} (${Math.round(age / 30.4)} months ago)</small></div><div class="rem-act">${tel(c)}<button class="btn primary" data-re="1">↻ Reorder</button></div></div>`).join('') : '<p class="muted small">No customers in the 6–12 month window.</p>'}</div>`;
   $$('#remList .rem-row').forEach(el => { el.querySelector('.rem-main').onclick = () => openCustomer(el.dataset.cid); });
   $$('#remList [data-pick]').forEach(b => b.onclick = () => setOrderStatus(b.closest('.rem-row').dataset.cid, b.dataset.pick, 'delivered'));
+  $$('#remList [data-addscan]').forEach(b => b.onclick = () => openAddScan(b.closest('.rem-row').dataset.cid));
   $$('#remList [data-re]').forEach(b => b.onclick = () => openReorder(b.closest('.rem-row').dataset.cid));
 }
 function reportData(list, F) {
@@ -1226,12 +1276,12 @@ function renderReports(list, F) {
 /* ---- export (CSV + xlsx) ---- */
 function exportRows(list, F) {
   const custs = list.filter(c => custMatch(c, F)), ords = allOrders(list).filter(({ c, o }) => orderMatch(c, o, F));
-  const ch = ['Customer ID', 'Name', 'Phone', 'Email', 'Tags', 'Staff notes', 'Customer since', 'Updated', 'Orders', 'Last order', 'Total spent (PHP)', 'Right foot (mm)', 'Left foot (mm)', 'Scan source', 'Test/sample'];
+  const ch = ['Customer ID', 'Name', 'Phone', 'Email', 'Tags', 'Staff notes', 'Customer since', 'Updated', 'Orders', 'Last order', 'Total spent (PHP)', 'Right foot (mm)', 'Left foot (mm)', 'Scan source', 'Scan pending', 'Test/sample'];
   const cr = custs.map(c => { const os = (c.orders || []).filter(o => ordStatus(o) !== 'cancelled'); const last = (c.orders || [])[0];
-    return [String(c.id), c.name || '', c.phone || '', c.email || '', (c.tags || []).join(', '), c.notes || '', c.createdAt ? dayKey(c.createdAt) : '', c.updatedAt ? dayKey(c.updatedAt) : '', (c.orders || []).length, last ? dayKey(last.date) : '', os.reduce((s, o) => s + orderNet(o), 0), c.feet?.R?.length || '', c.feet?.L?.length || '', [...new Set(Object.values(c.feet || {}).map(f => SRC_LABEL[f.source] || f.source))].join(', '), isTestCust(c) ? 'yes' : '']; });
-  const oh = ['Order no', 'Date (PHT)', 'Time (PHT)', 'Customer', 'Phone', 'Product', 'Colours', 'Initials', 'Size', 'Feet', 'Status', 'Status since (PHT)', 'Price (PHP)', 'Discount (PHP)', 'Net (PHP)', 'Payment method', 'Paid', 'Staff', 'Payment notes', 'Created by', 'Test/sample'];
+    return [String(c.id), c.name || '', c.phone || '', c.email || '', (c.tags || []).join(', '), c.notes || '', c.createdAt ? dayKey(c.createdAt) : '', c.updatedAt ? dayKey(c.updatedAt) : '', (c.orders || []).length, last ? dayKey(last.date) : '', os.reduce((s, o) => s + orderNet(o), 0), c.feet?.R?.length || '', c.feet?.L?.length || '', [...new Set(Object.values(c.feet || {}).map(f => SRC_LABEL[f.source] || f.source))].join(', '), custScanPending(c) ? 'yes' : '', isTestCust(c) ? 'yes' : '']; });
+  const oh = ['Order no', 'Date (PHT)', 'Time (PHT)', 'Customer', 'Phone', 'Product', 'Colours', 'Initials', 'Size', 'Feet', 'Status', 'Status since (PHT)', 'Price (PHP)', 'Discount (PHP)', 'Net (PHP)', 'Payment method', 'Paid', 'Staff', 'Payment notes', 'Created by', 'Scan pending', 'Test/sample'];
   const tm = iso => new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit' });
-  const or = ords.map(({ c, o }) => [o.id, dayKey(o.date), tm(o.date), c.name || '', c.phone || '', o.product || '', o.design?.colors ? [o.design.colors.extruder1?.name, o.design.colors.extruder2?.name].filter(Boolean).join(' / ') : '', o.design?.text || '', o.size || '', (o.sides || []).join('+'), stLabel(ordStatus(o)), dayKey(statusSince(o)) + ' ' + tm(statusSince(o)), +o.total || 0, +o.payment?.discount || 0, orderNet(o), o.payment?.method || '', o.payment?.paid ? 'yes' : 'no', o.payment?.staffName || '', o.payment?.notes || '', o.by || '', isTestOrder(c, o) ? 'yes' : '']);
+  const or = ords.map(({ c, o }) => [o.id, dayKey(o.date), tm(o.date), c.name || '', c.phone || '', o.product || '', o.design?.colors ? [o.design.colors.extruder1?.name, o.design.colors.extruder2?.name].filter(Boolean).join(' / ') : '', o.design?.text || '', o.size || '', (o.sides || []).join('+'), stLabel(ordStatus(o)), dayKey(statusSince(o)) + ' ' + tm(statusSince(o)), +o.total || 0, +o.payment?.discount || 0, orderNet(o), o.payment?.method || '', o.payment?.paid ? 'yes' : 'no', o.payment?.staffName || '', o.payment?.notes || '', o.by || '', o.scanPending ? 'yes' : '', isTestOrder(c, o) ? 'yes' : '']);
   return { ch, cr, oh, or };
 }
 const csvCell = v => { const s = String(v ?? ''); return /[",\n\r]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; };
@@ -1272,6 +1322,7 @@ function openCustomer(id) {
   sheet(`<div class="row-between"><h3 style="margin:0">${esc(c.name)}</h3><span class="tag" title="${esc(c.id)}">${esc(String(c.id).length > 12 ? String(c.id).slice(0, 8) : c.id)}</span></div>
     <p class="muted small" style="margin:4px 0 6px">Customer since ${fmtDate(c.createdAt)}${c.phone ? ` · <a href="tel:${esc(c.phone.replace(/[^\d+]/g, ''))}">📞 ${esc(c.phone)}</a>` : ''}</p>
     <div class="tagrow cc-tags">${tags.map(t => `<button class="ctag ctag-${esc(t.toLowerCase())} ${c.tags.includes(t) ? 'on' : ''}" data-tag="${esc(t)}">${c.tags.includes(t) ? '✓ ' : '+ '}${esc(t)}</button>`).join('')}<span class="cc-addtag"><input id="ccTagIn" placeholder="Custom tag" maxlength="24"><button class="btn ghost" id="ccTagAdd">Add</button></span></div>
+    ${custScanPending(c) ? `<div class="warn-card cc-pending"><b>📷 Scan pending</b><p class="tiny">Built from ${esc([...new Set(Object.values(c.feet || {}).filter(f => NEEDS_SCAN_SRC.includes(f.source)).map(f => f.source === 'self' ? 'the customer’s ' + (f.entered?.unitLabel || 'size') + ' ' + (f.entered?.value ?? '') : 'manual measurements'))].join(' / '))} – approximate fit. Add the 3D scan to rebuild the print files.</p><button class="btn primary big" id="ccAddScan">📷 Add scan</button></div>` : ''}
     <details class="cc-sec"><summary><b>Details</b> <span class="muted small">${esc(c.phone || '')}${c.email ? ' · ' + esc(c.email) : ''}</span></summary>
       <label class="field">Name<input id="ccName" value="${esc(c.name || '')}"></label><label class="field">Mobile<input id="ccPhone" inputmode="tel" value="${esc(c.phone || '')}"></label><label class="field">Email<input id="ccEmail" type="email" value="${esc(c.email || '')}"></label><button class="btn ghost" id="ccSaveDet">Save details</button></details>
     <h4 class="crm-h">Staff notes</h4><textarea id="ccNotes" rows="3" placeholder="Internal notes – not shown to the customer">${esc(c.notes || '')}</textarea><button class="btn ghost small-btn" id="ccSaveNotes">Save notes</button>
@@ -1284,7 +1335,8 @@ function openCustomer(id) {
     <table class="params">${Object.entries(pf).map(([sd, x]) => `<tr><td>${sideName(sd)}</td><td>${R.ARCH_TYPES[x.archType]?.short} · arch ${x.archHeight} mm · cup ${x.heelCupDepth} mm${x.medialPost ? ' · post ' + x.medialPost + '°' : ''}${x.lateralWedge ? ' · wedge ' + x.lateralWedge + '°' : ''}${x.heelLift ? ' · lift ' + x.heelLift + ' mm' : ''}${x.metPad ? ' · met pad' : ''} · ${x.shore}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">–</td></tr>'}
       <tr><td>Product</td><td>${esc(R.PRODUCTS.find(p => p.id === s.productId)?.name || '–')}${s.design ? ' · ' + esc(PAL(s.design.colors?.base).name) + ' / ' + esc(PAL(s.design.colors?.top).name) : ''}</td></tr></table></details>
     <div class="crm-actions"><button class="btn ghost" id="crmLoad">Open in dashboard</button><button class="btn ghost" id="crmDel"${cloudOn() && !Cloud.isAdmin ? ' disabled title="Admins only"' : ''}>Delete</button></div>
-    <p class="tiny muted">Reorder regenerates the print files from the stored scan data and settings – no rescan needed.</p>`);
+    <p class="tiny muted">Reorder regenerates the print files from the stored scan data and settings – no rescan needed.</p><button class="btn ghost" id="ccAddScan2">📷 ${custScanPending(c) ? 'Add scan' : 'Add / replace scan'}</button>`);
+  $('#ccAddScan2').onclick = () => openAddScan(c.id);
   $('#sheet').dataset.cid = c.id;
   $$('#sheet .rc-open').forEach(b => b.onclick = () => openReceipt(c.id, b.dataset.oid));
   $$('#sheet .cc-st select').forEach(sel => sel.onchange = () => setOrderStatus(c.id, sel.dataset.oid, sel.value));
@@ -1296,11 +1348,58 @@ function openCustomer(id) {
   $('#crmLoad').onclick = () => { loadCustomer(c); $('#sheet').classList.add('hidden'); show('s-staff'); toast(c.name + ' loaded'); };
   $('#crmReorder').onclick = () => doReorder(c, null);
   $('#crmReorderChg').onclick = () => openReorder(c.id);
+  $('#ccAddScan') && ($('#ccAddScan').onclick = () => openAddScan(c.id));
   $('#crmDel').onclick = async () => {
     if (cloudOn() && !Cloud.isAdmin) { toast('Only an admin can delete customers'); return; }
     if (!confirm('Delete ' + c.name + (cloudOn() ? ' (cloud record, scans and STL files)?' : ' from this device?'))) return;
     if (cloudOn()) { try { await cloudQueue; await deleteCustomerCloud(c); } catch (e) { toast('Delete failed: ' + e.message, 4500); return; } }
     crmSave(crmAll().filter(x => x.id !== c.id)); if (state.customerId === c.id) state.customerId = null; $('#sheet').classList.add('hidden'); renderCRM(); };
+}
+// v11.1: add the 3D scan later for a "scan pending" customer -> regenerate the print files of the pending order(s)
+const custScanPending = c => !!c.scanPending || needsScanFeet(c.feet);
+function openAddScan(cid) {
+  const c = crmAll().find(x => x.id === cid); if (!c) return;
+  loadCustomer(c); const got = {};
+  const draw = () => {
+    sheet(`<div class="row-between"><h3 style="margin:0">📷 Add scan – ${esc(c.name)}</h3><button class="btn ghost small-btn" id="asBack">← Back</button></div>
+      <p class="small muted">Upload the 3D scan of each foot (STL, OBJ or PLY). Left / right is detected automatically. The pending order's print files are then rebuilt from the scan (same order number, same design).</p>
+      <div class="scan-feet">${['R', 'L'].map(sd => { const f = state.feet[sd]; return `<div class="sf ${got[sd] ? 'done' : ''}"><div class="sf-ic">${got[sd] ? '✓' : sd === 'R' ? '①' : '②'}</div><div><b>${sideName(sd)} foot</b><small>${got[sd] ? '3D scan · ' + esc(got[sd]) + ' · ' + f.length + ' mm' : f ? esc(SRC_LABEL[f.source] || f.source) + ' · ' + f.length + ' mm – waiting for scan' : 'waiting for scan'}</small></div></div>`; }).join('')}</div>
+      <label class="btn primary big file-btn"><span>${Object.keys(got).length ? 'Upload the other foot' : 'Upload scan file'}</span><input type="file" id="asFile" accept=".stl,.obj,.ply,model/stl,model/obj,application/octet-stream" multiple></label>
+      <p class="tiny" id="asMsg" style="min-height:1.2em"></p>
+      <button class="btn ${Object.keys(got).length ? 'primary' : 'ghost'} big" id="asApply" ${Object.keys(got).length ? '' : 'disabled'}>Save scan &amp; regenerate print files</button>`);
+    $('#asBack').onclick = () => openCustomer(c.id);
+    $('#asFile').onchange = async e => {
+      for (const f of [...e.target.files]) {
+        try {
+          $('#asMsg').textContent = 'Reading ' + f.name + '…';
+          let obj; if (/\.stl$/i.test(f.name)) obj = new STLLoader().parse(await f.arrayBuffer()); else if (/\.obj$/i.test(f.name)) obj = new OBJLoader().parse(await f.text()); else if (/\.ply$/i.test(f.name)) obj = new PLYLoader().parse(await f.arrayBuffer()); else throw new Error('Please choose an STL, OBJ or PLY file');
+          const raw = objToGeo(obj), res = alignScan(raw, f.name), sd = applyAligned(res, f.name, raw); state.nudge[sd] = {}; got[sd] = f.name;
+        } catch (err) { console.warn(err); toast('Could not read ' + f.name + ': ' + err.message, 4500); }
+      }
+      draw();
+    };
+    $('#asApply').onclick = () => applyAddedScan(c, got);
+  };
+  draw();
+}
+function applyAddedScan(c0, got) {
+  const list = crmAll(), c = list.find(x => x.id === c0.id) || c0, now = new Date().toISOString();
+  Object.assign(c, snapshot(), { updatedAt: now });
+  c.scanHistory = c.scanHistory || [];
+  for (const sd of Object.keys(got)) { const f = state.feet[sd], sig = scanSig(f); if (!c.scanHistory.some(h => h.sig === sig)) c.scanHistory.push({ sig, side: sd, source: f.source, file: f.file || null, length: f.length, width: f.width, archType: f.archType, csi: f.csi, date: now }); }
+  c.scanPending = needsScanFeet(state.feet);
+  const pend = (c.orders || []).filter(o => o.scanPending && ordStatus(o) !== 'cancelled'), regen = [];
+  for (const o of pend) {
+    const stls = Object.keys(state.feet).map(sd => buildStl(sd, o.id));
+    const spec = { ...buildSpec(o.id, stls.map(x => x.info)), customer: { id: c.id, name: c.name, phone: c.phone }, regeneratedFromScan: now };
+    o.scanPending = c.scanPending; o.scanAddedAt = now; o.feetInfo = Object.fromEntries(Object.keys(state.feet).map(s => [s, { length: state.feet[s].length, source: state.feet[s].source }]));
+    regen.push({ o, stls, spec });
+  }
+  crmSave(list);
+  regen.forEach(({ o, stls, spec }, k) => { setTimeout(() => download(`${o.id}-spec.json`, JSON.stringify(spec, null, 2), 'application/json'), 900 * k); stls.forEach((x, i) => setTimeout(() => download(x.name, x.data, 'model/stl'), 900 * k + 400 * (i + 1))); });
+  if (cloudOn()) { const files = rawMeshFiles(); cloudJob('scan', async () => { await saveCustomerCloud(c, files); for (const { o, stls, spec } of regen) await insertOrderCloud(c, o, spec, stls); }); }
+  toast(regen.length ? `Scan saved · ${regen.length} order(s) regenerated from the 3D scan${c.scanPending ? ' (one foot still pending)' : ''}` : 'Scan saved' + (c.scanPending ? ' (one foot still pending)' : ''), 4200);
+  renderCRM(); openCustomer(c.id);
 }
 let scanViewer = null, scanViewerEl = null;
 async function viewScan3D(c, h) {
@@ -1313,7 +1412,7 @@ async function viewScan3D(c, h) {
   if (h.meshPath && cloudOn()) {
     try { const url = await signedUrl('scans', h.meshPath), buf = await (await fetch(url)).arrayBuffer(); const raw = objToGeo(new STLLoader().parse(buf)); const res = alignScan(raw, h.file || 'scan.stl'); scanViewer.set(heightColored(res.geo), false); $('#sv3Note').textContent = 'Original 3D scan from cloud storage (heat = contact zones).'; }
     catch (e) { console.warn(e); illus('the raw scan could not be loaded (' + e.message + ')'); }
-  } else illus(h.source === 'file' ? 'the raw scan file is kept only in cloud storage' : h.source === 'manual' ? 'measured by hand, no 3D scan' : '');
+  } else illus(h.source === 'file' ? 'the raw scan file is kept only in cloud storage' : h.source === 'manual' ? 'measured by hand, no 3D scan' : h.source === 'self' ? 'from the customer’s shoe size, scan pending' : '');
 }
 function openReorder(cid) {
   const c = crmAll().find(x => x.id === cid); if (!c) return;
@@ -1349,8 +1448,8 @@ async function doReorder(c, ds) {
   renderCRM(); openCustomer(c.id);
 }
 $('#crmSearch').oninput = renderCRM;
-['#fTag', '#fProduct', '#fStatus', '#fFrom', '#fTo'].forEach(s => $(s).onchange = renderCRM);
-$('#fClear').onclick = () => { ['#fTag', '#fProduct', '#fStatus', '#fFrom', '#fTo'].forEach(s => $(s).value = ''); renderCRM(); };
+['#fTag', '#fProduct', '#fStatus', '#fScan', '#fFrom', '#fTo'].forEach(s => $(s).onchange = renderCRM);
+$('#fClear').onclick = () => { ['#fTag', '#fProduct', '#fStatus', '#fScan', '#fFrom', '#fTo'].forEach(s => $(s).value = ''); renderCRM(); };
 $$('#crmTabs button').forEach(b => b.onclick = () => { crmTab = b.dataset.t; renderCRM(); });
 $$('#ordView button').forEach(b => b.onclick = () => { ordView = b.dataset.v; renderCRM(); });
 window.__fixiCRM = { reportData: () => reportData(crmAll(), crmFilters()), exportRows: () => exportRows(crmAll(), crmFilters()), buildXlsx, toCsv, readyOverdue, replacementDue, setOrderStatus };
@@ -1471,7 +1570,7 @@ function receiptData(c, o) {
   const fl = ['R', 'L'].filter(s => fi[s]).map(s => `${sideName(s)} ${fi[s].length} mm`).join(' · ');
   const srcs = [...new Set(Object.values(fi).map(f => f.source))];
   lines.push(`Size: ${o.size || (fi.R || fi.L ? 'EU ' + sizeFromLength(Math.max(...Object.values(fi).map(f => f.length))).eu : '–')}${fl ? ' · foot length ' + fl : ''}`);
-  lines.push(srcs.every(x => x === 'file') ? 'Custom-made from your 3D foot scan' : srcs.includes('manual') ? 'Custom-made from manual foot measurements' : 'Made to your measurements');
+  lines.push(srcs.every(x => x === 'file') ? 'Custom-made from your 3D foot scan' : srcs.includes('manual') ? 'Custom-made from manual foot measurements' : srcs.includes('self') ? 'Made from your shoe size – scan pending' : 'Made to your measurements');
   const test = /\bTEST\b/i.test(c.name || '') || srcs.some(x => x === 'sample' || x === 'demo');
   return { receiptNo: pay.receiptNo || o.id, date: o.date, customer: { name: c.name, phone: c.phone, email: c.email }, items: [{ title: o.product + ' (pair)', lines, qty: '1 pair', unit: o.total, n: 1 }],
     discount: pay.discount || 0, payment: { method: pay.method, paid: !!pay.paid }, staffName: pay.staffName || staffName(), notes: pay.notes || '', biz: bizSettings(), test, ...logoData() };
@@ -1520,7 +1619,7 @@ const onEnter = {
   's-health': () => { recompute(); renderQuestionnaire(); renderConditions(); },
   's-products': () => { recompute(); renderProducts(); },
   's-result': () => { recompute(); state.highlight = null; requestAnimationFrame(() => renderResult(false)); },
-  's-order': () => { recompute(); renderOrder(); },
+  's-order': () => { recompute(); renderOrder(); $('#orderScanNote').classList.toggle('hidden', !needsScanFeet()); },
   's-staff': () => { if (!state.staff) { askPin(); return; } renderStaff(false); },
   's-crm': () => { if (!state.staff) { askPin(); return; } enterCRM(); },
   's-align': () => { if (!state.staff) { askPin(); return; } requestAnimationFrame(() => renderAlign(false)); },
