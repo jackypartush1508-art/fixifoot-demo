@@ -290,6 +290,6 @@ body.staff .mode-banner button.primary{background:#5cc2ff;color:#082a4f}
 .p-tag{display:block;color:#015ad8;font-weight:600;margin:2px 0 4px}
 .rec-why{color:#015ad8;margin-top:4px}
 #modelInfo table.params{margin-top:8px}
-.product img.hero{height:auto;aspect-ratio:16/9}
+.product img.p-illus{height:auto;aspect-ratio:16/9;padding:0}
 .illus-cap{font-size:11px;color:#5d6b75;background:#f3f8fd;padding:4px 12px;border-bottom:1px solid #e3edf5}
 .print-prev{margin:8px 0 0}.print-prev img{width:100%;border-radius:12px;display:block}
