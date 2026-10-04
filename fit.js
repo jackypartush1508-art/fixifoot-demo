@@ -257,7 +257,33 @@ export function deriveModel(grid) {
     const fi = clamp((x - x0) / res - .5, 0, nx - 1.001), fj = clamp((z - z0) / res - .5, 0, nz - 1.001), i = Math.floor(fi), j = Math.floor(fj), a = fi - i, b = fj - j;
     return (S[j * nx + i] * (1 - a) + S[j * nx + i + 1] * a) * (1 - b) + (S[(j + 1) * nx + i] * (1 - a) + S[(j + 1) * nx + i + 1] * a) * b;
   };
-  return { grid, S, L: Math.round(L * 10) / 10, W: Math.round(ballW * 10) / 10, heelW: Math.round(heelW * 10) / 10, ballU, archU, archH: Math.round(archH * 10) / 10, archCap: archH + 2, csi, medialX, side, sideMethod, zHeel, zToe, rowAt, uOfZ, zOfU, sampleS, toeGap, sulcusU };
+  // v6.1 smooth forefoot: no copied toe ridges. Robust (lower-envelope weighted) quadratic fit of the plantar surface from just
+  // behind the metatarsal heads to the toe tips -> a template-like surface with gentle toe spring, blended into the scan over ~18 mm.
+  const hwB = Math.max(10, ballW / 2), tOf = z => uOfZ(z) - ballU, rB = rowAt(zOfU(ballU)), cB = (rB.lo + rB.hi) / 2;
+  // fixed (ball-row) centre and half-width -> the fit is a true low-order polynomial in x,z (no per-row outline wobble near the toe tip)
+  const sOf = (x, z) => medialX * (x - cB) / hwB, inRow = (x, z) => { const r = rowAt(z), c = (r.lo + r.hi) / 2, hw = Math.max(8, (r.hi - r.lo) / 2); return Math.abs(x - c) / hw; };
+  const basis = (t, sx) => [1, t, t * t, sx, sx * sx, sx * t];
+  const samp = [];
+  for (let j = jT; j <= jH; j++) { const z = z0 + (j + .5) * res, t = tOf(z); if (t < -.06) continue;
+    for (let i = 0; i < nx; i++) { const v = at(i, j); if (isNaN(v) || v > 25) continue; const xx = x0 + (i + .5) * res; if (inRow(xx, z) > .85) continue; const sx = sOf(xx, z); samp.push([basis(t, sx), v]); } }
+  let coef = null;
+  const solve = (A, b) => { const n = b.length, M = A.map((r, i) => [...r, b[i]]); for (let c = 0; c < n; c++) { let p = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r; [M[c], M[p]] = [M[p], M[c]]; if (Math.abs(M[c][c]) < 1e-12) return null; for (let r = 0; r < n; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]; } } return M.map((r, i) => r[n] / r[i]); };
+  if (samp.length > 30) {
+    let w = samp.map(() => 1);
+    for (let it = 0; it < 6; it++) {
+      const A = Array.from({ length: 6 }, () => new Array(6).fill(0)), b = new Array(6).fill(0);
+      samp.forEach(([f, v], k) => { for (let a = 0; a < 6; a++) { b[a] += w[k] * f[a] * v; for (let c = 0; c < 6; c++) A[a][c] += w[k] * f[a] * f[c]; } });
+      for (let a = 1; a < 6; a++) A[a][a] += 1e-3 * samp.length; // light ridge regularisation -> no wild curvature
+      const cNew = solve(A, b); if (!cNew) break; coef = cNew;
+      // asymmetric robust weights: points far ABOVE the surface (gaps between toes, toe sides) count little -> follows the toe pads
+      w = samp.map(([f, v]) => { const r = v - f.reduce((s, x, i) => s + x * coef[i], 0); return r > 0 ? 1 / (1 + (r / 1.0) ** 2) : 1 / (1 + (r / 3.0) ** 2); });
+    }
+  }
+  const softZero = q => q > 1 ? q : q < -1 ? 0 : .25 * (q + 1) ** 2;
+  const foreQ = (x, z) => { if (!coef) return null; const t = Math.max(tOf(z), -.08), f = basis(t, clamp(sOf(x, z), -1.6, 1.6)); return softZero(f.reduce((s, v, i) => s + v * coef[i], 0)); };
+  const fB0 = ballU - 14 / L, fB1 = ballU + 4 / L; // blend window (~18 mm) ending just in front of the met-head line
+  const sampleF = (x, z) => { const ps = sampleS(x, z), q = foreQ(x, z); if (q == null) return ps; const wq = smooth(fB0, fB1, uOfZ(z)); return wq <= 0 ? ps : ps * (1 - wq) + q * wq; };
+  return { grid, S, sampleF, foreCoef: coef, foreBlend: [fB0, fB1], L: Math.round(L * 10) / 10, W: Math.round(ballW * 10) / 10, heelW: Math.round(heelW * 10) / 10, ballU, archU, archH: Math.round(archH * 10) / 10, archCap: archH + 2, csi, medialX, side, sideMethod, zHeel, zToe, rowAt, uOfZ, zOfU, sampleS, toeGap, sulcusU };
 }
 export function encodeGrid(gr) { const q = new Int16Array(gr.raw.length); for (let k = 0; k < q.length; k++) q[k] = isNaN(gr.raw[k]) ? (gr.sil && gr.sil[k] ? -32767 : -32768) : Math.round(gr.raw[k] * 10); let s = ''; const u = new Uint8Array(q.buffer); for (let i = 0; i < u.length; i += 8192) s += String.fromCharCode.apply(null, u.subarray(i, i + 8192)); return { res: gr.res, x0: gr.x0, z0: gr.z0, nx: gr.nx, nz: gr.nz, q: btoa(s) }; }
 export function decodeGrid(e) { const s = atob(e.q), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); const q = new Int16Array(u.buffer), raw = new Float32Array(q.length), sil = new Uint8Array(q.length); for (let k = 0; k < q.length; k++) { raw[k] = q[k] <= -32767 ? NaN : q[k] / 10; sil[k] = q[k] === -32768 ? 0 : 1; } return { res: e.res, x0: e.x0, z0: e.z0, nx: e.nx, nz: e.nz, raw, sil }; }
@@ -292,6 +318,7 @@ export function modZoneTest(md, p) {
   if (p.medialPost || p.medialHeelSkive) tests.push(['Medial heel post', (u, sn) => u < .45 && sn > -.2]);
   if (p.lateralWedge) tests.push(['Lateral wedge', (u, sn) => sn < .2]);
   if ((p.archFill ?? 100) < 100) tests.push([`Arch fill ${p.archFill}%`, (u, sn) => Math.abs(u - .41) < .2 && sn > -.1]);
+  tests.push(['Smooth forefoot (no toe ridges)', u => u > md.ballU - 4 / L]);
   if (p.toeCrest) tests.push(['Toe crest', u => Math.abs(u - (md.sulcusU - .012)) < .05]);
   if (p.mortonExtension) tests.push(["Morton's extension", (u, sn) => u > md.ballU - .06 && sn > .2]);
   if (p.heelCutout || p.offloadPockets) tests.push(['Heel offload pocket', (u, sn) => Math.hypot((u - .12) / .08, sn / .5) < 1]);
@@ -328,7 +355,7 @@ export function buildContactSole(md, opts) {
     for (let j = 0; j < NV; j++) {
       const sn = -1 + 2 * j / (NV - 1), x = e.c + md.medialX * sn * e.half;
       // plantar height capped just above the measured arch apex: at the outline the lower envelope climbs the side of the foot, the insole must not
-      const P = Math.min(md.sampleS(x, e.z), md.archCap) * (1 - (1 - fill) * gauss(u, .41, .12) * smooth(-0.2, 0.6, sn));
+      const P = Math.min(md.sampleF(x, e.z), md.archCap) * (1 - (1 - fill) * gauss(u, .41, .12) * smooth(-0.2, 0.6, sn));
       // heel cup wall rises from the SCANNED heel contour (foot-relative position sf = 1 at the footprint edge)
       const rf = md.rowAt(e.z), fh = Math.max(4, (rf.hi - rf.lo) / 2), sf = (x - (rf.lo + rf.hi) / 2) * md.medialX / fh;
       const cup = p.heelCupDepth * smooth(.93, 1.05, Math.hypot(Math.max(0, (.12 - u) / .12), sf)) * (1 - smooth(.22, .38, u));
@@ -421,7 +448,7 @@ export function morphTemplate(src, md, { params: p, full = true, color = '#c8784
     meta.push([ut, snT, zt, x, z, u]);
     if (N.getZ(i) > 0.35) {
       const snc = clamp(snT, -.8, .8), xc = c + md.medialX * snc * half;
-      const Pv = Math.min(md.sampleS(xc, z), md.archCap) * (1 - (1 - fill) * gauss(u, .41, .12) * smooth(-0.2, 0.6, snc));
+      const Pv = Math.min(md.sampleF(xc, z), md.archCap) * (1 - (1 - fill) * gauss(u, .41, .12) * smooth(-0.2, 0.6, snc));
       const rf = md.rowAt(z), fh = Math.max(4, (rf.hi - rf.lo) / 2), sf = (xc - (rf.lo + rf.hi) / 2) * md.medialX / fh;
       const cup = p.heelCupDepth * smooth(.93, 1.05, Math.hypot(Math.max(0, (.12 - u) / .12), sf)) * (1 - smooth(.22, .38, u));
       tgt[i] = Math.max(Pv, cup) + mods(md, p, u, snc, half) - (T.look(T.top, ut, snc) - T.look(T.top, ut, clamp(snT, -1, 1))); // keep the template's own rim shape beyond the bed
