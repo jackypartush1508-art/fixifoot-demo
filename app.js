@@ -107,7 +107,8 @@ class Viewer {
   // preset camera views for the free (trackball) viewer. medialX = which x direction is the inside of the foot
   view(name, animate = true, medialX = -1) {
     if (!this.obj) return;
-    const D = { iso: [[-0.55, 0.62, -1], [0, 1, 0]], top: [[0, 1, 0.0001], [0, 0, -1]], bottom: [[0, -1, 0.0001], [0, 0, -1]], inside: [[medialX, 0.08, 0], [0, 1, 0]], outside: [[-medialX, 0.08, 0], [0, 1, 0]], back: [[0, 0.12, 1], [0, 1, 0]], front: [[0, 0.12, -1], [0, 1, 0]] }[name] || [[-0.55, 0.62, -1], [0, 1, 0]];
+    const D = { iso: [[0.16, 1, 0.5], [0, 1, 0]], // v8.2: default 3/4 view from behind/above (the person's own view: Left foot left, big toes inside)
+       top: [[0, 1, 0.0001], [0, 0, -1]], bottom: [[0, -1, 0.0001], [0, 0, -1]], inside: [[medialX, 0.08, 0], [0, 1, 0]], outside: [[-medialX, 0.08, 0], [0, 1, 0]], back: [[0, 0.12, 1], [0, 1, 0]], front: [[0, 0.12, -1], [0, 1, 0]] }[name] || [[0.16, 1, 0.5], [0, 1, 0]];
     const dir = new THREE.Vector3(...D[0]).normalize(), up = new THREE.Vector3(...D[1]);
     const fit = this.radius / Math.sin(THREE.MathUtils.degToRad(this.camera.fov / 2)) * (this.camera.aspect < 1 ? 1.0 / Math.max(.62, this.camera.aspect) * 0.8 : 0.95);
     const p1 = this.home.clone().addScaledVector(dir, fit);
@@ -288,7 +289,7 @@ function renderFoot() {
   if (state.previewSide !== 'both' && !state.feet[state.previewSide]) state.previewSide = 'both';
   const sides = state.previewSide === 'both' ? avail : [state.previewSide];
   const g = new THREE.Group(), labels = [];
-  sides.forEach(s => { const o = footObject(s), f = state.feet[s]; if (sides.length > 1) o.position.x = (s === 'R' ? -1 : 1) * 68; g.add(o); labels.push({ text: sideName(s), pos: new THREE.Vector3(o.position.x, f.length * 0.5, 0) }); });
+  sides.forEach(s => { const o = footObject(s), f = state.feet[s]; if (sides.length > 1) o.position.x = (s === 'R' ? 1 : -1) * 68; /* v8.2: anatomical layout – right foot on +x (screen right when seen from behind/above, as the person sees their own feet) */ g.add(o); labels.push({ text: sideName(s), pos: new THREE.Vector3(o.position.x, f.length * 0.5, 0) }); });
   footViewer.set(g, false);
   footViewer.setLabels(labels);
   footViewer.medialX = sides.length === 1 && sides[0] === 'L' ? 1 : -1;

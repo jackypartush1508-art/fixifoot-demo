@@ -18,9 +18,29 @@ function interp(tab, u) {
   const m1 = (p2[1] - p0[1]) / 2, m2 = (p3[1] - p1[1]) / 2, t2 = t * t, t3 = t2 * t;
   return (2 * t3 - 3 * t2 + 1) * p1[1] + (t3 - 2 * t2 + t) * m1 + (-2 * t3 + 3 * t2) * p2[1] + (t3 - t2) * m2;
 }
+// v8.2 – canonical INSOLE outline (classic insole-last shape, like the Fixifoot L90/S90 templates): narrow rounded heel,
+// gentle waist at the arch (medial curve a little deeper), widest at the metatarsal heads, rounded toe end with the apex
+// slightly medial. Returns medial / lateral distances from a straight heel->toe axis as fractions of the BALL width.
+// uB = where the ball (widest row) sits on 0..1. Smooth everywhere (Hermite table + analytic rounded ends) -> a fair curve.
+const ISM = [[0, .345], [.17, .35], [.30, .325], [.42, .305], [.55, .37], [.66, .455], [.70, .48]];
+const ISL = [[0, .365], [.17, .37], [.30, .385], [.42, .395], [.55, .44], [.66, .505], [.70, .52]];
+export function insoleShape(u, uB = .70) {
+  u = Math.min(1, Math.max(0, u));
+  const v = u <= uB ? u * .70 / uB : .70 + (u - uB) * .30 / (1 - uB); // ball row -> canonical .70
+  if (v <= .70) {
+    let m = interp(ISM, v), l = interp(ISL, v);
+    const hR = .17; if (v < hR) { const e = Math.sqrt(Math.max(0, 1 - ((hR - v) / hR) ** 2)); m *= e; l *= e; } // round heel
+    return { m, l };
+  }
+  const t = (v - .70) / .30, sh = .075 * t ** 1.6; // rounded toe, apex shifted to the medial side
+  const m = .48 * Math.pow(Math.max(0, 1 - t ** 2.5), 1 / 2.5) + sh, l = .52 * Math.pow(Math.max(0, 1 - t ** 1.85), 1 / 1.85) - sh;
+  return { m, l };
+}
 export function outline(u, W, opt = {}) {
   const k = W / 0.95;
-  let m = interp(MED, u) * k, l = interp(LAT, u) * k;
+  let m, l;
+  if (opt.insole) { const q = insoleShape(u, opt.ballU ?? .71); m = q.m * W; l = -q.l * W; } // v8.2 clean insole outline (W = ball width)
+  else { m = interp(MED, u) * k; l = interp(LAT, u) * k; } // anatomical foot outline (3D foot, footprint)
   if (opt.extraFore) { const f = smooth(.55, .7, u) * (1 - smooth(.92, 1, u)) * opt.extraFore / 2; m += f; l -= f; }
   if (opt.lateralFlare) l -= 3 * (1 - smooth(.25, .42, u)) * smooth(0, .06, u);
   return { m, l };
@@ -235,7 +255,7 @@ function buildSoleParam(opts) {
   const rows = [];
   for (let i = 0; i < NU; i++) {
     const t = i / (NU - 1), u = 0.003 + (uMax - 0.003) * (0.5 - 0.5 * Math.cos(Math.PI * t));
-    let { m, l } = outline(u, W, { extraFore: p.forefootExtraWidth || 0, lateralFlare: p.lateralFlare });
+    let { m, l } = outline(u, W, { insole: true, extraFore: p.forefootExtraWidth || 0, lateralFlare: p.lateralFlare });
     if (uMax < .99) { const rf = .07, d = u - (uMax - rf); if (d > 0) { const f = Math.sqrt(Math.max(0.0004, 1 - (d / rf) ** 2)), c = (m + l) / 2; m = c + (m - c) * f; l = c + (l - c) * f; } } // rounded 3/4 front
     const hw = (m - l) / 2, bz = flatBottom ? 0 : bottomHeight(u, p, kind), row = [];
     for (let j = 0; j < NV; j++) {

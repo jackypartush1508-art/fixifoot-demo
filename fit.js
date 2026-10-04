@@ -7,7 +7,7 @@
 //  fitCheck:         rasterises the actual product top surface and measures the gap to the scan (mm)
 import * as THREE from 'three';
 import { mergeVertices, mergeGeometries } from 'three/addons/BufferGeometryUtils.js';
-import { holesTexture, hexTexture, zoneHit, heatColor } from './geometry.js';
+import { holesTexture, hexTexture, zoneHit, heatColor, insoleShape } from './geometry.js';
 import { buildOpenSole, rowSampler, defaultAllow } from './openings.js';
 
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
@@ -340,12 +340,21 @@ function insoleFrame(md, kind, lastLen, frontU = null) {
   const a = ALLOW[kind] || ALLOW.insole;
   let toe = a.toe; if (lastLen) toe = Math.max(2, lastLen - md.L - a.heel);
   const zBack = md.zHeel + a.heel, zFront = frontU != null ? md.zOfU(frontU) : md.zToe - toe, Li = zBack - zFront; // v7: 3/4 length ends at frontU
-  const Rb = .5 * md.heelW + a.side, Rf = .32 * md.W + a.side;
-  const edge = ui => { // lateral/medial x of the outline at insole-u
-    const z = zBack - ui * Li, r = md.rowAt(z), c = (r.lo + r.hi) / 2, dB = zBack - z, dF = z - zFront;
-    let half = (r.hi - r.lo) / 2 + a.side;
-    if (dB < Rb) half *= Math.sqrt(Math.max(0, 1 - ((Rb - dB) / Rb) ** 2)); if (dF < Rf) half *= Math.sqrt(Math.max(0, 1 - ((Rf - dF) / Rf) ** 2));
-    half = Math.max(half, 1.5);
+  // v8.2: clean, fair insole outline instead of the raw (smoothed) scan silhouette. The canonical insole-last shape
+  // (geometry.insoleShape) is laid on a straight axis through the scanned heel centre and ball centre, scaled to the scanned
+  // ball width (+ side allowance) and, in the rearfoot, to the scanned heel width. Ball row of the shape = scanned ball line.
+  const zB = md.zOfU(md.ballU), rbB = md.rowAt(zB), rbH = md.rowAt(md.zOfU(.15)), cBx = (rbB.lo + rbB.hi) / 2, cHx = (rbH.lo + rbH.hi) / 2;
+  const zH = md.zOfU(.15), axisX = z => cHx + (cBx - cHx) * (z - zH) / ((zB - zH) || 1);
+  const zEnd = md.zToe - (frontU != null ? (lastLen ? Math.max(2, lastLen - md.L - a.heel) : a.toe) : toe), LiF = zBack - zEnd; // full-length insole (3/4 = truncated copy)
+  const Wb = md.W + 2 * a.side, uBall = clamp((zBack - zB) / LiF, .55, .85);
+  const heelK = clamp((md.heelW + 2 * a.side) / (.72 * Wb), .85, 1.15);
+  const Rf = .28 * Wb;
+  const edge = ui => { // lateral/medial x of the outline at insole-u (0 = heel end, 1 = front end of THIS insole)
+    const z = zBack - ui * Li, uf = (zBack - z) / LiF, q = insoleShape(uf, uBall), k = Wb * (heelK + (1 - heelK) * smooth(.22, .55, uf));
+    let mm = q.m * k, ll = q.l * k;
+    if (frontU != null) { const dF = z - zFront; if (dF < Rf) { const f = Math.sqrt(Math.max(0, 1 - ((Rf - dF) / Rf) ** 2)), cc = (mm - ll) / 2; mm = cc + (mm - cc) * f; ll = -cc + (ll + cc) * f; } } // 3/4: rounded front corners
+    let half = Math.max((mm + ll) / 2, 1.5);
+    const c = axisX(z) + md.medialX * (mm - ll) / 2;
     return { c, half, xM: c + md.medialX * half, xL: c - md.medialX * half, z };
   };
   return { zBack, zFront, Li, edge, allow: { ...a, toe } };
