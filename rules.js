@@ -399,7 +399,25 @@
   /* ---------------- Customer questionnaire (one question per screen) ----------------
      type: 'single' (tap one, auto-advance) or 'multi' (tap several + Next)
      Each option can switch on conditions (cond) and/or set an answer key (set).   */
+  // v12.1: short professional questionnaire (4 questions, no emojis). The scan + orthotist engine infer the rest.
   const QUESTIONS = [
+    { id: 'pain', title: 'Where does it hurt?', help: 'Select all that apply', type: 'multi',
+      options: [
+        { v: 'heel', label: 'Heel', cond: ['plantar_fasciitis'], set: { heelPain: 'yes' } },
+        { v: 'arch', label: 'Arch', cond: ['plantar_fasciitis'] },
+        { v: 'ball', label: 'Ball of foot', cond: ['metatarsalgia'] },
+        { v: 'toes', label: 'Toes', set: { toePain: 'yes' } },
+        { v: 'kneeback', label: 'Knee / back', cond: ['joint_pain'], set: { jointPain: 'yes' } },
+        { v: 'none', label: 'No pain', none: true }] },
+    { id: 'diabetes', title: 'Do you have diabetes?', type: 'single',
+      options: [{ v: 'no', label: 'No', set: { diabetes: 'no' } }, { v: 'yes', label: 'Yes', cond: ['diabetic'], set: { diabetes: 'yes' } }] },
+    { id: 'activity', title: 'Daily activity', help: 'Time on your feet and exercise', type: 'single',
+      options: [{ v: 'low', label: 'Low', sub: 'mostly sitting', set: { standing: '0-4', activity: 'light' } }, { v: 'moderate', label: 'Moderate', sub: '4–8 h on feet', set: { standing: '4-8', activity: 'moderate' } }, { v: 'high', label: 'High', sub: '8 h+ or sports', cond: ['standing_worker'], set: { standing: '8+', activity: 'athlete' } }] },
+    { id: 'weight', title: 'Body weight', type: 'single',
+      options: [{ v: '<60', label: 'Under 60 kg', set: { weight: '<60' } }, { v: '60-90', label: '60–90 kg', set: { weight: '60-90' } }, { v: '90+', label: 'Over 90 kg', set: { weight: '90+' } }] }
+  ];
+  // pre-v12.1 questions: no longer shown, still read so answers saved with older customers keep their meaning
+  const LEGACY_QUESTIONS = [
     { id: 'pain', icon: '📍', title: 'Where does it hurt?', help: 'Tap all that apply', type: 'multi',
       options: [
         { v: 'heel', icon: '🌅', label: 'Heel (morning)', cond: ['plantar_fasciitis'], set: { heelPain: 'yes' } },
@@ -437,7 +455,7 @@
   ];
   function conditionsFromQA(qa) {
     const ids = new Set(), answers = {};
-    for (const q of QUESTIONS) {
+    for (const q of [...LEGACY_QUESTIONS, ...QUESTIONS]) {
       const val = qa[q.id]; if (val == null) continue;
       const vals = Array.isArray(val) ? val : [val];
       for (const o of q.options) if (vals.includes(o.v)) { (o.cond || []).forEach(c => ids.add(c)); Object.assign(answers, o.set || {}); }

@@ -91,15 +91,6 @@
       <p class="tiny muted center">STL, OBJ or PLY file · up to about 100 MB</p>
     </div>
     <div class="card noscan-card" id="noScanCard"><h3>👟 No 3D scan yet?</h3><p class="small muted">Continue with your <b>shoe size or foot length</b>. You can order now – we add your scan later (free in the shop, or upload it) and check the fit before printing.</p><button class="btn ghost big" id="noScanBtn">Continue without scan →</button></div>
-    <details class="card scan-how" id="scanHow" open><summary><b>How to scan with your phone</b></summary>
-      <ol class="how small-how">
-        <li><span>1</span><div>Open <b>KIRI Engine</b> (free) or another 3D-scan app and choose <i>Object / Photo scan</i>.</div></li>
-        <li><span>2</span><div>Sit down and rest your bare foot flat on a plain floor or a sheet of A4 paper. Roll your trousers up above the ankle.</div></li>
-        <li><span>3</span><div>Slowly walk the phone around the foot at 30–40 cm (2–3 rounds: low, middle, high). Keep the foot still.</div></li>
-        <li><span>4</span><div>Export the model as <b>STL, OBJ or PLY</b> and upload it here. Then do the same for your left foot.</div></li>
-      </ol>
-      <p class="tiny muted">Ask our staff – we are happy to scan your feet for you in the shop.</p>
-    </details>
     <div class="card staff-only scan-staff"><h3>🛠 Staff options</h3>
       <button class="btn ghost big" id="manualBtn">📏 Manual measurements (no 3D scan)</button>
       <p class="tiny muted">Fallback when no scan is possible: enter foot length, width and arch type for each foot. The insole is then built from these measurements (no total-contact fit) and is marked “manual measurements” on the order.</p>
@@ -155,16 +146,20 @@
       </label>
       <div id="scanSuggest"></div>
     </div>
-    <div class="bottom-actions"><button class="btn primary big" data-go="s-health">Next: a few quick questions</button><p class="tiny muted center">About 1 minute · tap to answer</p></div>
+    <div class="bottom-actions"><button class="btn primary big" data-go="s-health">Next: a few quick questions</button><p class="tiny muted center">4 questions · about 20 seconds</p></div>
   </section>
 
   <!-- 5. QUESTIONS (one per screen) -->
   <section class="screen" id="s-health" data-step="4">
     <h2>A few quick questions</h2>
-    <p class="muted" style="margin-top:-6px">Tap what fits you – about 30 seconds.</p>
-    <div id="qForm"></div>
-    <div class="bottom-actions"><button class="btn primary big" id="seeResultsBtn">See my results ✨</button></div>
+    <p class="muted q-intro">Four questions · about 20 seconds</p>
+    <div id="qForm" class="q-form"></div>
+    <div class="bottom-actions"><button class="btn primary big" id="seeResultsBtn">See my results</button></div>
     <div class="staff-only">
+      <div class="card q-staff"><h3>Staff only</h3>
+        <label class="switch"><input type="checkbox" id="staffLldChk"> Leg-length difference (one leg shorter)</label>
+        <label class="field">Notes<textarea id="staffQaNotes" rows="2" maxlength="500" placeholder="Optional – e.g. shoe wear, toe deformity, history"></textarea></label>
+      </div>
       <h3 class="section-title">Staff: full checklist <small>(scan + answers, editable)</small></h3>
       <div id="condList"></div>
       <div class="card hidden" id="lldBox">
@@ -257,7 +252,6 @@
           <div class="viewer" id="staffViewer"><div class="viewer-hint">Drag to rotate · zones highlighted</div></div>
           <div class="zone-chips" id="staffZoneChips" style="margin-top:10px"></div>
           <div class="card">
-            <div class="warn-card hidden" id="approxWarn"><b>⚠ Approximate fit – scan recommended</b><p class="tiny">These print files are built from measurements (shoe size / foot length), not from a 3D scan. Files are named “-APPROX”. Use “Add scan later” on the customer card to regenerate them from a scan.</p></div>
             <div class="staff-dl">
               <button class="btn primary big" id="dlStlR">⬇ Download STL – Right</button>
               <button class="btn primary big" id="dlStlL">⬇ Download STL – Left</button>

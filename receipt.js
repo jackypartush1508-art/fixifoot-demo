@@ -53,7 +53,7 @@ export async function buildReceiptPdf(d) {
   doc.text(official ? 'Acknowledges payment / order received. Ask us if you need a BIR-registered invoice.' : 'This is not an official receipt (BIR). It acknowledges your order and any payment received.', M, y); y += 8;
   // meta box
   const paid = !!d.payment?.paid;
-  const meta = [['Receipt / order no.', d.receiptNo], ['Date', manilaTime(d.date)], ['Payment method', d.payment?.method || '–'], ['Status', paid ? 'PAID' : 'UNPAID']];
+  const meta = [['Receipt / order no.', d.receiptNo], ['Date', manilaTime(d.date)], ['Payment method', d.payment?.method || '–']]; // v12.1: no status field in the header
   doc.setFillColor(242, 248, 255); doc.roundedRect(M, y - 4.5, R - M, 17, 2, 2, 'F');
   meta.forEach(([k, v], i) => { const x = M + 4 + (i % 2) * 88, yy = y + Math.floor(i / 2) * 7.5; font('normal', 8, grey); doc.text(k, x, yy); font('bold', 10, k === 'Status' ? (paid ? [10, 125, 59] : [192, 57, 43]) : ink); doc.text(String(v), x + 34, yy); });
   y += 20;
@@ -87,11 +87,6 @@ export async function buildReceiptPdf(d) {
   font('normal', 9, grey); doc.text('Staff', M, y); font('normal', 9.5); doc.text(d.staffName || '–', M + 22, y); y += 5;
   if (d.notes) { font('normal', 9, grey); doc.text('Notes', M, y); font('normal', 9.5); const ns = doc.splitTextToSize(d.notes, R - M - 22); doc.text(ns, M + 22, y); y += ns.length * 4.4 + 1; }
   y += 5;
-  // thank you + care
-  doc.setFillColor(240, 250, 244); const careH = 12 + CARE.length * 4.6; doc.roundedRect(M, y - 5, R - M, careH, 2, 2, 'F');
-  font('bold', 10.5, [10, 125, 59]); doc.text('Thank you for choosing Fixifoot!', M + 4, y); y += 5.5;
-  font('bold', 8.8); doc.text('Caring for your TPU insoles', M + 4, y); y += 4.6; font('normal', 8.4);
-  for (const c of CARE) { doc.text('•  ' + c, M + 5, y); y += 4.6; }
   // footer
   const fy = 284; doc.setDrawColor(226, 233, 241); doc.setLineWidth(0.3); doc.line(M, fy - 5, R, fy - 5);
   font('bold', 8.5, ink); doc.text('Comfort product, not a medical device.', M, fy);

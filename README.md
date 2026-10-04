@@ -409,3 +409,10 @@ The staff CRM is now about **customers and their scans**, not sales.
 - Staff dashboard → **🩺 Fitting report**. It shows the measurements and each correction with its value and a plain-English reason. Every value can be overridden before export (overrides are saved with the customer), with a reset button. The **Fitting report PDF** includes a reviewer signature line. The spec JSON carries the fitting report.
 - Orders without a scan use conservative defaults and are marked **APPROX**.
 - Screenshots: `screenshots/v12-*.png`.
+
+## v12.1 – UI clean-up
+- Customer questionnaire cut down to 4 compact questions with no emojis: where it hurts (6 chips), diabetes yes/no, daily activity (Low / Moderate / High, combining hours on feet and sport), and weight (3 ranges). The toes, shoe-wear and "anything else" questions were dropped because the scan and the orthotist engine infer them. Answers saved with older customers are still read. Staff-only extras on the same page: a leg-length difference toggle and notes.
+- Scan upload screen: the "How to scan with your phone" card was removed (staff scan in the shop).
+- PDF receipt: the header no longer has a Status field, and the care-tips / thank-you box was removed.
+- Staff results: the yellow "Approximate fit – scan recommended" box above the STL downloads was removed. Files built without a scan still get the `-APPROX` filename suffix.
+- Screenshots: `screenshots/questions-short.png`, `screenshots/scan-upload-no-instructions.png`, `screenshots/receipt-v12.1.png`.

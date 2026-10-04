@@ -412,9 +412,11 @@ function recompute() {
 function renderQuestionnaire() {
   $('#qForm').innerHTML = R.QUESTIONS.map(q => {
     const cur = state.qa[q.id], sel = v => (Array.isArray(cur) ? cur.includes(v) : cur === v);
-    return `<div class="q-sec" data-q="${q.id}"><h4><span>${q.icon}</span>${q.title}${q.help ? ` <small>${q.help}</small>` : ''}</h4>
-      <div class="q-chips">${q.options.map(o => `<button class="q-chip ${sel(o.v) ? 'on' : ''}" data-v="${o.v}"><span class="ic">${o.icon || ''}</span>${o.label}</button>`).join('')}</div></div>`;
+    return `<div class="q-sec q-${q.type}" data-q="${q.id}"><h4>${q.title}${q.help ? ` <small>${q.help}</small>` : ''}</h4>
+      <div class="q-chips">${q.options.map(o => `<button class="q-chip ${sel(o.v) ? 'on' : ''}" data-v="${o.v}">${o.label}${o.sub ? `<small>${o.sub}</small>` : ''}</button>`).join('')}</div></div>`;
   }).join('');
+  const sn = $('#staffQaNotes'); if (sn) { sn.value = state.qa._notes || ''; sn.oninput = () => { state.qa._notes = sn.value.slice(0, 500); }; }
+  const lc = $('#staffLldChk'); if (lc) { lc.checked = state.conditions.has('leg_length'); lc.onchange = () => { if (lc.checked) { state.staffRemoves.delete('leg_length'); state.staffAdds.add('leg_length'); } else { state.staffAdds.delete('leg_length'); state.staffRemoves.add('leg_length'); } recompute(); renderConditions(); }; }
   $$('#qForm .q-sec').forEach(sec => sec.querySelectorAll('.q-chip').forEach(b => b.onclick = () => {
     const q = R.QUESTIONS.find(x => x.id === sec.dataset.q), v = b.dataset.v, cur = state.qa[q.id];
     if (q.type === 'single') state.qa[q.id] = cur === v ? undefined : v;
@@ -424,12 +426,12 @@ function renderQuestionnaire() {
       else { arr = arr.filter(x => !q.options.find(o => o.v === x).none); arr = arr.includes(v) ? arr.filter(x => x !== v) : [...arr, v]; }
       state.qa[q.id] = arr;
     }
-    if (q.id === 'diabetes' && v === 'yes' && state.qa.diabetes === 'yes') toast('Thanks – we will make it extra soft and gentle 💚');
+    if (q.id === 'diabetes' && v === 'yes' && state.qa.diabetes === 'yes') toast('Noted – your insole will be extra soft, with no hard edges.');
     sec.querySelectorAll('.q-chip').forEach(x => { const c2 = state.qa[q.id]; x.classList.toggle('on', Array.isArray(c2) ? c2.includes(x.dataset.v) : c2 === x.dataset.v); });
     recompute(); renderConditions();
   }));
 }
-$('#seeResultsBtn').onclick = () => { recompute(); toast('Great, thank you! 🙌'); if (state.design) { applyDesign(); show('s-result'); } else show('s-products'); };
+$('#seeResultsBtn').onclick = () => { recompute(); toast('Thank you.'); if (state.design) { applyDesign(); show('s-result'); } else show('s-products'); };
 function prevQuestion() { return false; }
 function modsText(c) {
   const m = c.mods, out = [];
@@ -456,7 +458,7 @@ function renderConditions() {
     const c = R.CONDITIONS.find(x => x.id === b.dataset.info);
     sheet(`<h3>${c.name}</h3><p class="muted"><b>Signs:</b> ${c.signs}</p><p>${c.explain}</p><b>What we change in the insole:</b><ul>${modsText(c).map(t => `<li>${t}</li>`).join('')}</ul><p class="disclaimer small">Comfort product – not a medical diagnosis.</p>`);
   });
-  $('#lldBox').classList.toggle('hidden', !state.conditions.has('leg_length'));
+  $('#lldBox').classList.toggle('hidden', !state.conditions.has('leg_length')); const lc = $('#staffLldChk'); if (lc) lc.checked = state.conditions.has('leg_length');
 }
 $('#lldMm').oninput = e => { state.answers.lldMm = +e.target.value; $('#lldVal').textContent = e.target.value; };
 $('#lldSide').onchange = e => { state.answers.lldSide = e.target.value; };
