@@ -471,9 +471,11 @@
   const PRODUCTS = [
     { id: 'perforated', name: 'Perforated orthotic insole', kind: 'insole', image: 'assets/insole-perforated.jpg',
       desc: 'Thin, ventilated insole with breathing holes. Fits most shoes.', colors: ['#f4f6f6', '#cfd8dc', '#1f2a30', '#0099ff'], examplePrice: 2490 },
-    { id: 'flipflop', name: 'Classic thong flip-flop', kind: 'flipflop', image: 'catalog/flipflop-hero.jpg', photo: 'assets/flipflop-classic.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan', detail: { image: 'catalog/flipflop-scan-hero.jpg', label: 'Custom Scan Flip-Flop' },
-      desc: 'Everyday flip-flop with your custom footbed built in.', colors: ['#3a3f3a', '#1f2a30', '#6b4f3a', '#0099ff'], strapColors: ['#d8c6a8', '#f4f6f6', '#1f2a30', '#f2994a'], examplePrice: 2990 },
-    { id: 'slide', name: 'Lattice slide sandal', kind: 'slide', image: 'catalog/slide-hero.jpg', photo: 'assets/slide-lattice.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan',
+    { id: 'flipflop', name: 'Fixifoot Arch Flip-Flop', tagline: 'Built-in arch support, classic thong', kind: 'flipflop', image: 'catalog/flipflop-hero.jpg', photo: 'assets/flipflop-classic.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan', detail: { image: 'catalog/flipflop-scan-hero.jpg', label: 'Custom Scan Flip-Flop' },
+      desc: 'Everyday flip-flop with your custom arch-support footbed built in.', colors: ['#3a3f3a', '#1f2a30', '#6b4f3a', '#0099ff'], strapColors: ['#d8c6a8', '#f4f6f6', '#1f2a30', '#f2994a'], examplePrice: 2990 },
+    { id: 'flipflop_scan', name: 'Fixifoot Custom Scan Flip-Flop', tagline: 'Shaped exactly to your foot scan', kind: 'flipflop', image: 'catalog/flipflop-scan-hero.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan',
+      desc: 'Thong flip-flop whose footbed is a full-contact copy of your scanned sole.', colors: ['#ff7a1a', '#1f2a30', '#0099ff', '#3a3f3a'], strapColors: ['#ff7a1a', '#f4f6f6', '#1f2a30', '#d8c6a8'], examplePrice: 2990 },
+    { id: 'slide', name: 'Fixifoot Lattice Slide', tagline: 'Light, airy honeycomb slide', kind: 'slide', image: 'catalog/slide-hero.jpg', photo: 'assets/slide-lattice.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan',
       desc: '3D-printed honeycomb mesh slide. Light, airy, washable.', colors: ['#f4f6f6', '#f26b1d', '#1f2a30', '#1aa7d8'], examplePrice: 3490 },
     { id: 'fullcontact', name: 'Full-contact TPU insole', kind: 'insole', image: 'assets/insole-fullcontact.jpg',
       desc: 'Full-length TPU insole with sculpted arch support.', colors: ['#c8784a', '#d9a066', '#1f2a30', '#0099ff'], examplePrice: 2790 },
@@ -548,5 +550,21 @@
   }
   const ADDON_EXAMPLE_PRICE = 150; // per advanced modification (example only)
 
-  global.FixiRules = { rationale, REFS, FRIENDLY, ARCH_FRIENDLY, ARCH_FRIENDLY_TEXT, QUESTIONS, conditionsFromQA, benefits, ARCH_TYPES, ZONES, CONDITIONS, PRODUCTS, recommendProduct, ADDON_EXAMPLE_PRICE, SHORE_ORDER, combine, autoConditionsFromAnswers, suggestFromScan };
+  /* ---------------- v9: design-first (choose + colour before the scan) ---------------- */
+  // realistic TPU filament colours (what we can actually print) – hex used for preview, 3MF displaycolor and spec
+  const PALETTE = [
+    { id: 'black', name: 'Black', hex: '#1c1f24' }, { id: 'white', name: 'White', hex: '#f3f5f7' }, { id: 'grey', name: 'Grey', hex: '#8c949b' },
+    { id: 'blue', name: 'Fixifoot Blue', hex: '#0099ff' }, { id: 'lightblue', name: 'Light blue', hex: '#9fd3ff' }, { id: 'orange', name: 'Orange', hex: '#ff7a1a' },
+    { id: 'yellow', name: 'Yellow', hex: '#ffd22e' }, { id: 'olive', name: 'Olive', hex: '#6b7b3a' }, { id: 'beige', name: 'Beige / nude', hex: '#dcb48c' },
+    { id: 'red', name: 'Red', hex: '#d7263d' }, { id: 'pink', name: 'Pink', hex: '#ff8fb8' }, { id: 'purple', name: 'Purple', hex: '#7b4fc9' }];
+  // customer catalog (9 products): 6 insoles + 3 sandals. Labels = what extruder 1 / 2 print on this product.
+  const CATALOG = ['everyday', 'sport', 'work', 'diabetic', 'dress', 'kids', 'flipflop', 'flipflop_scan', 'slide'];
+  const DESIGN = {
+    sport: { parts: ['Base', 'Top layer'], def: ['black', 'blue'], text: 'top' }, everyday: { parts: ['Base', 'Top layer'], def: ['white', 'lightblue'], text: 'top' },
+    diabetic: { parts: ['Soft base', 'Extra-soft inserts'], def: ['white', 'lightblue'], text: 'bottom' }, work: { parts: ['Shell', 'Honeycomb cushions'], def: ['grey', 'yellow'], text: 'top', textU: .38 },
+    dress: { parts: ['Body', 'Ball-of-foot pad'], def: ['beige', 'white'], text: 'top' }, kids: { parts: ['Base', 'Top layer'], def: ['orange', 'blue'], text: 'top' },
+    flipflop: { parts: ['Sole', 'Strap'], def: ['olive', 'beige'], text: 'top' }, flipflop_scan: { parts: ['Sole', 'Strap'], def: ['orange', 'orange'], text: 'top' },
+    slide: { parts: ['Sole', 'Lattice upper'], def: ['orange', 'orange'], text: 'top' }, perforated: { parts: ['Insole', '–'], def: ['white', 'white'], text: 'top' }, fullcontact: { parts: ['Insole', '–'], def: ['beige', 'beige'], text: 'top' } };
+  const DEFAULT_PRICE = 9999; // PHP, every product for now – override per product in config.js (window.FIXI_PRICES) or staff settings
+  global.FixiRules = { PALETTE, CATALOG, DESIGN, DEFAULT_PRICE, rationale, REFS, FRIENDLY, ARCH_FRIENDLY, ARCH_FRIENDLY_TEXT, QUESTIONS, conditionsFromQA, benefits, ARCH_TYPES, ZONES, CONDITIONS, PRODUCTS, recommendProduct, ADDON_EXAMPLE_PRICE, SHORE_ORDER, combine, autoConditionsFromAnswers, suggestFromScan };
 })(window);

@@ -5,6 +5,8 @@ import { TrackballControls } from 'three/addons/TrackballControls.js';
 import { STLLoader } from 'three/addons/STLLoader.js';
 import { OBJLoader } from 'three/addons/OBJLoader.js';
 import { STLExporter } from 'three/addons/STLExporter.js';
+import { toCreasedNormals } from 'three/addons/BufferGeometryUtils.js';
+import { loadEngraver, engraverReady, planText, engraveBodies, cleanText, measureText, ensureClosed, TEXT_RULES } from './engrave.js';
 import { buildFoot, buildProduct, buildPrintableSole, printableRows, drawFootprint, adaptTemplate, wrapFoot, heatColor } from './geometry.js';
 import { OPENING_PRESETS, HOLE_DIAMETERS, defaultAllow } from './openings.js';
 import { buildTwoMaterial, bodiesToPrint, build3MF } from './multi.js';
@@ -14,7 +16,7 @@ import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, build
 const R = window.FixiRules;
 const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
 const SCREENS_ALL = ['s-crm'];
-const SCREENS = ['s-welcome', 's-scan', 's-preview', 's-analysis', 's-health', 's-products', 's-result', 's-order'];
+const SCREENS = ['s-welcome', 's-catalog', 's-design', 's-summary', 's-scan', 's-preview', 's-analysis', 's-health', 's-products', 's-result', 's-order'];
 const peso = n => '₱' + n.toLocaleString('en-PH');
 
 const state = {
@@ -25,7 +27,8 @@ const state = {
   history: ['s-welcome'], lastParams: null,
   look: { heat: true, wire: false, scan: false }, previewSide: 'both', totalContact: true, customerId: null, archFill: null, rawScans: {}, nudge: {}, alignSide: 'R', fitSide: 'R',
   twoMat: true, // v8: show the 2-material split (both bodies in their colours) for the insole line
-  openings: { on: true, density: 'med', d: 3.5 } // v6: real ventilation holes (perforated) / lattice (slide) in preview + STL
+  openings: { on: true, density: 'med', d: 3.5 }, // v6: real ventilation holes (perforated) / lattice (slide) in preview + STL
+  design: null // v9: { productId, colors: { base, top } (palette ids), text, size, keptSuggestion } – chosen BEFORE the scan
 };
 window.__fixifoot = state; // handy for debugging
 
@@ -145,12 +148,14 @@ function sizeFromLength(L) { const eu = Math.round((L / 10 + 1.5) * 1.5); return
 function lengthFromEU(eu) { return Math.round((eu / 1.5 - 1.5) * 10); }
 // product outline dimensions in mm (scan or chosen shoe size) – insole/sole is a bit longer than the foot
 function productDims(side) {
-  const f = state.feet[side] || mainFoot();
+  const f = state.feet[side] || mainFoot() || genericFoot();
   const footL = state.sizeMode === 'scan' ? f.length : lengthFromEU(+state.sizeMode);
   const footW = state.sizeMode === 'scan' ? f.width : Math.round(footL * f.width / f.length);
   const allow = state.product && state.product.kind !== 'insole' ? 12 : 6;
   return { footL, L: footL + allow, W: footW + 4, eu: sizeFromLength(footL).eu };
 }
+// v9: generic foot for the designer (before the scan): chosen EU size or EU 41
+function genericFoot() { const eu = +(state.design?.size || 41), L = lengthFromEU(eu); return { side: 'R', length: L, width: Math.round(L * .39), archType: 'normal', source: 'generic' }; }
 function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 function mainFoot() { return state.feet[state.side] || Object.values(state.feet)[0]; }
 function longestFoot() { return Object.values(state.feet).reduce((a, b) => (!a || b.length > a.length ? b : a), null); }
@@ -377,7 +382,7 @@ function renderQuestionnaire() {
     recompute(); renderConditions();
   }));
 }
-$('#seeResultsBtn').onclick = () => { recompute(); toast('Great, thank you! 🙌'); show('s-products'); };
+$('#seeResultsBtn').onclick = () => { recompute(); toast('Great, thank you! 🙌'); if (state.design) { applyDesign(); show('s-result'); } else show('s-products'); };
 function prevQuestion() { return false; }
 function modsText(c) {
   const m = c.mods, out = [];
@@ -486,32 +491,65 @@ const tplKind = p => p.kind === 'insole' && !p.model; // v7 line models are alwa
 const thickFor = p => (p.id === 'perforated' ? 2.2 : p.id === 'fullcontact' ? 3.6 : undefined);
 // one place that builds the product for display (zones) or for printing / fit check
 const openingMode = p => p?.id === 'perforated' || p?.model?.openings === 'holes' ? 'holes' : p?.id === 'slide' ? 'lattice' : null;
-function openingsFor(p) { const m = openingMode(p); return m && state.openings.on ? { mode: m, density: state.openings.density, ...(m === 'holes' ? { d: state.openings.d || 3.5 } : {}) } : null; }
+function openingsFor(p) { const m = openingMode(p); if (!(m && state.openings.on)) return null;
+  const o = { mode: m, density: state.openings.density, ...(m === 'holes' ? { d: state.openings.d || 3.5 } : {}) };
+  if (m === 'lattice' && designText()) { const base = defaultAllow('lattice'); o.allow = (u, sn) => base(u, sn) && !(u > .06 && u < .29 && Math.abs(sn) < .82); o.labelPatch = true; } // v9: solid patch under the engraved initials
+  return o; }
 // v8: 2-material split of an insole-line model (two scan-fitted bodies sharing one interface)
 const dualCache = {};
 function dualFor(side, spec = currentSpec(side)) {
   const p = ensureProduct(); if (!p.dual) return null;
   const md = scanModel(side), model = p.id === 'diabetic' ? { ...p.model, recesses: [] } : p.model; // diabetic: the pockets are filled by the soft inserts
-  const key = JSON.stringify([p.id, side, state.sizeMode, state.totalContact, spec.params, state.openings, state.feet[side]?.mapId, state.feet[side]?.length, md?.L]);
-  if (dualCache[side]?.key === key) return dualCache[side].v;
+  const txt = designText(), key = JSON.stringify([p.id, side, state.sizeMode, state.totalContact, spec.params, state.openings, state.feet[side]?.mapId, state.feet[side]?.length, md?.L, state.design?.size, txt, txt && engraverReady()]);
+  if (dualCache[side]?.key === key) return withDesignColors(dualCache[side].v);
   let rows, lenKey, ballU, L;
   if (md) { const s = buildContactSole(md, { params: { ...spec.params, _model: model }, kind: 'insole', zones: [], showZones: false, color: '#ffffff', lastLen: lastLenFor('insole') }); rows = s.userData.rows; lenKey = 'z'; ballU = md.ballU; L = md.L; s.geometry.dispose(); }
   else { const d = productDims(side); ({ rows, lenKey } = printableRows(p, { L: d.L, W: d.W, params: spec.params, side, model })); ballU = .72; L = d.footL; }
   const pos = { met: { u: ballU + .005, sn: 0, ru: .045 * L, rsn: .66 }, hallux: { u: Math.min(ballU + .125, .93), sn: .5, ru: .045 * L, rsn: .3 }, arch: { u: .41, sn: .56, ru: .14 * L, rsn: .2 }, pad: { u: ballU - 15 / L, sn: .05, ru: 12, rsn: .36 } };
-  const v = buildTwoMaterial(rows, lenKey, p.dual, { ballU, L, pos, holes: openingsFor(p), allowHoles: defaultAllow('holes', spec.params, ballU) });
-  dualCache[side] = { key, v }; return v;
+  let label = null; // v9: keep the base/top solid (no lattice cells or holes) under the engraved initials, so the letter floor stays >= 1.2 mm
+  if (txt && engraverReady() && (R.DESIGN[p.id]?.text || 'top') === 'top') { const m = measureText(txt, TEXT_RULES.capMm), hw = Math.max(22, .12 * L), along = m.w > hw * .95;
+    label = { u: R.DESIGN[p.id]?.textU ?? .17, du: ((along ? Math.min(m.w, .25 * L) : m.h) / 2 + 7) / L, sn: Math.min(.9, ((along ? m.h : m.w) / 2 + 7) / hw) }; }
+  const v = buildTwoMaterial(rows, lenKey, p.dual, { ballU, L, pos, label, holes: openingsFor(p), allowHoles: defaultAllow('holes', spec.params, ballU) });
+  if (txt) { // v9: initials engraved as real geometry into both bodies (2-colour inlay on layered models)
+    const where = R.DESIGN[p.id]?.text || 'top', mode = p.dual.type === 'layer' && where === 'top' ? 'layer' : 'cut';
+    if (!engraverReady()) v.engraving = { text: txt, pending: true };
+    else try { const plan = planText(v.bodies.map(b => b.geometry), txt, where, R.DESIGN[p.id]?.textU); if (!plan) throw new Error('text too long for the heel at the minimum letter height');
+      const r = engraveBodies(v.bodies.map(b => b.geometry), plan, mode); v.bodies.forEach((b, i) => { b.geometry.dispose(); b.geometry = r.geos[i]; }); v.engraving = r.info;
+      v.stats.minThicknessMm = Object.fromEntries(Object.entries(v.stats.minThicknessMm)); v.stats.engraving = r.info;
+    } catch (e) { console.warn('engrave', e); v.engraving = { text: txt, error: e.message }; }
+  }
+  dualCache[side] = { key, v }; return withDesignColors(v);
+}
+// v9 design helpers
+const PAL = id => R.PALETTE.find(c => c.id === id) || R.PALETTE[0];
+const designText = () => cleanText(state.design?.text || '').trim();
+function designParts(p = ensureProduct()) { const d = R.DESIGN[p.id] || R.DESIGN.everyday, c = state.design?.colors || { base: d.def[0], top: d.def[1] }; return [{ part: d.parts[0], extruder: 1, ...PAL(c.base) }, { part: d.parts[1], extruder: 2, ...PAL(c.top) }]; }
+function withDesignColors(v) { if (!state.design || !v) return v; const dp = designParts(); return { ...v, bodies: v.bodies.map((b, i) => ({ ...b, color: dp[i].hex, colorName: dp[i].name })) }; }
+const PRICE_KEY = 'fxPrices_v1';
+const localPrices = () => { try { return JSON.parse(localStorage.getItem(PRICE_KEY)) || {}; } catch { return {}; } };
+function priceOf(id) { const loc = localPrices(), cfg = window.FIXI_PRICES || {}; const v = loc[id] ?? cfg[id] ?? cfg.default ?? R.DEFAULT_PRICE; return Math.max(0, Math.round(+v || R.DEFAULT_PRICE)); }
+function applyDesign() { const ds = state.design; if (!ds) return; const p = R.PRODUCTS.find(x => x.id === ds.productId); if (p && state.product?.id !== p.id) state.product = p; const dp = designParts(); state.color = dp[0].hex; state.strapColor = dp[1].hex; if (ds.size) state.sizeMode = String(ds.size); }
+function startDesign(id) { const d = R.DESIGN[id]; const keep = state.design; state.design = { productId: id, colors: { base: d.def[0], top: d.def[1] }, text: keep?.text || '', size: keep?.size || '' }; applyDesign(); }
+// engraved single solid (one-piece STL / sandal sole): Y-up geometry in, engraved geometry out (or the input when no text)
+function engraveSingle(geo, p) {
+  const txt = designText(); if (!txt) return { geo, info: null };
+  if (!engraverReady()) return { geo, info: { text: txt, error: 'engraver still loading – try again in a second' } };
+  try { const where = R.DESIGN[p.id]?.text || 'top', plan = planText([geo], txt, where, R.DESIGN[p.id]?.textU); if (!plan) throw new Error('text too long for the heel');
+    const r = engraveBodies([geo], plan, 'cut'); return { geo: r.geos[0], info: r.info }; } catch (e) { console.warn('engrave', e); return { geo, info: { text: txt, error: e.message } }; }
 }
 function dualPrint(side) { const p = ensureProduct(), dv = dualFor(side); return dv ? { p, dv, bodies: bodiesToPrint(dv.bodies) } : null; }
 function build3mfFor(side, id) {
   const r = dualPrint(side); if (!r) return null; const { p, dv, bodies } = r;
   const meta = { title: `${p.name} – ${sideName(side)} foot (${id})`, description: `${p.dual.look}. Two bodies assembled in place; extruder 1 = ${bodies[0].colorName} ${bodies[0].material}, extruder 2 = ${bodies[1].colorName} ${bodies[1].material}. Scan-fitted (Fixifoot).`,
-    print: { model: p.name, orderId: id, side: sideName(side), ...p.print, base: `Extruder 1 – ${bodies[0].colorName} ${bodies[0].material} (${bodies[0].name})`, top: `Extruder 2 – ${bodies[1].colorName} ${bodies[1].material} (${bodies[1].name})`, singleMaterialProfile: { base: p.print?.base, top: p.print?.top }, dualMaterial: { look: p.dual.look, bodies: bodies.map(b => ({ name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill, volumeCm3: +(b.volumeMm3 / 1000).toFixed(1) })), interface: 'shared surface – no gap / overlap', stats: dv.stats } } };
+    print: { model: p.name, orderId: id, side: sideName(side), ...(state.design ? { design: designSummary() } : {}), ...(dv.engraving ? { engraving: dv.engraving } : {}), ...p.print, base: `Extruder 1 – ${bodies[0].colorName} ${bodies[0].material} (${bodies[0].name})`, top: `Extruder 2 – ${bodies[1].colorName} ${bodies[1].material} (${bodies[1].name})`, singleMaterialProfile: { base: p.print?.base, top: p.print?.top }, dualMaterial: { look: p.dual.look, bodies: bodies.map(b => ({ name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill, volumeCm3: +(b.volumeMm3 / 1000).toFixed(1) })), interface: 'shared surface – no gap / overlap', stats: dv.stats } } };
   return { name: `${id}-${p.id}-2material-${sideName(side).toLowerCase()}.3mf`, data: build3MF(bodies, meta), bodies, stats: dv.stats };
 }
 function bodyStls(side, id) { const r = dualPrint(side); if (!r) return []; return r.bodies.map(b => ({ name: `${id}-${r.p.id}-${b.id}-${b.colorName.toLowerCase().replace(/[^a-z]+/g, '-')}-ext${b.extruder}-${sideName(side).toLowerCase()}.stl`, data: new STLExporter().parse(new THREE.Mesh(b.geometry), { binary: true }) })); }
+const creasedCache = new WeakMap();
+function creased(geo) { let c = creasedCache.get(geo); if (!c) { c = toCreasedNormals(geo, Math.PI / 5); creasedCache.set(geo, c); } return c.clone(); }
 function productObject(side, spec, { display = true, zonesOn = state.showZones, openings = display } = {}) {
   const p = ensureProduct(), md = scanModel(side), useTpl = state.base && tplKind(p) && templateCache[state.base];
-  if (display && p.dual && state.twoMat) { const dv = dualFor(side, spec); if (dv) { const g = new THREE.Group(); dv.bodies.forEach(b => { const m = new THREE.Mesh(b.geometry.clone(), new THREE.MeshStandardMaterial({ color: b.color, roughness: .5, metalness: 0, side: THREE.DoubleSide })); m.name = b.id; g.add(m); }); g.userData.dual = dv.stats; return g; } }
+  if (display && p.dual && state.twoMat) { const dv = dualFor(side, spec); if (dv) { const g = new THREE.Group(); dv.bodies.forEach(b => { const m = new THREE.Mesh(dv.engraving && !dv.engraving.error && !dv.engraving.pending ? creased(b.geometry) : b.geometry.clone(), new THREE.MeshStandardMaterial({ color: b.color, roughness: .5, metalness: 0, side: THREE.DoubleSide })); m.name = b.id; g.add(m); }); g.userData.dual = dv.stats; return g; } }
   const op = openings ? openingsFor(p) : null;
   const integ = p.kind === 'insole' || state.integrate;
   const z = { zones: display ? spec.zones : [], showZones: display && zonesOn, highlight: display ? state.highlight : null };
@@ -524,12 +562,27 @@ function productObject(side, spec, { display = true, zonesOn = state.showZones, 
   if (md && integ) {
     const lastLen = lastLenFor(p.kind);
     if (!display) { const s = buildContactSole(md, { params: { ...spec.params, _thick: thickFor(p), ...(p.model ? { _model: p.model } : {}) }, kind: p.kind, zones: [], showZones: false, color: state.color, lastLen, openings: op }); return s; }
-    return buildProduct(p, { L: 0, W: 0, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, integrate: true, openings: op, soleFn: o => buildContactSole(md, { ...o, lastLen }) });
+    return engraveDisplay(buildProduct(p, { L: 0, W: 0, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, upperColor: state.strapColor, integrate: true, openings: op, soleFn: o => buildContactSole(md, { ...o, lastLen }) }), p);
   }
   const d = productDims(side);
   if (!display) return buildPrintableSole(p, { L: d.L, W: d.W, params: spec.params, side, integrate: integ, openings: op });
-  return buildProduct(p, { L: d.L, W: d.W, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, integrate: integ, openings: op });
+  return engraveDisplay(buildProduct(p, { L: d.L, W: d.W, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, upperColor: state.strapColor, integrate: integ, openings: op }), p);
 }
+// v9: show the engraved initials on single-body products (sandal soles, legacy insoles) in the 3D preview
+const engDispCache = {};
+function engraveDisplay(g, p) {
+  const txt = designText(); if (!txt || !engraverReady() || !state.design) return g;
+  const sole = g.children.find(o => o.name === 'sole'); if (!sole) return g;
+  const key = [p.id, txt, sole.geometry.attributes.position.count, sole.geometry.attributes.position.array[0], sole.geometry.attributes.position.array[7]].join('|');
+  let eg = engDispCache.k === key ? engDispCache.g : null;
+  if (!eg) { const src = new THREE.BufferGeometry(); src.setAttribute('position', sole.geometry.attributes.position.clone()); src.setIndex(sole.geometry.index.clone());
+    const r = engraveSingle(mergeForCsg(src), p); if (!r.info || r.info.error) { engDispCache.info = r.info; return g; } eg = toCreasedNormals(r.geo, Math.PI / 5); engDispCache.k = key; engDispCache.g = eg; engDispCache.info = r.info; }
+  sole.geometry.dispose(); sole.geometry = eg.clone(); sole.material = new THREE.MeshStandardMaterial({ color: state.color, roughness: .7, side: THREE.DoubleSide });
+  return g;
+}
+function mergeForCsg(g) { const P = g.attributes.position, I = g.index.array, map = new Map(), pos = [], idx = new Uint32Array(I.length); const remap = new Int32Array(P.count);
+  for (let i = 0; i < P.count; i++) { const k = P.getX(i).toFixed(4) + ',' + P.getY(i).toFixed(4) + ',' + P.getZ(i).toFixed(4); let v = map.get(k); if (v === undefined) { v = pos.length / 3; map.set(k, v); pos.push(P.getX(i), P.getY(i), P.getZ(i)); } remap[i] = v; }
+  for (let i = 0; i < I.length; i++) idx[i] = remap[I[i]]; const o = new THREE.BufferGeometry(); o.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); o.setIndex(new THREE.BufferAttribute(idx, 1)); return o; }
 // fit check: product top vs scanned plantar surface
 const fitCache = {};
 function fitFor(side) {
@@ -558,11 +611,13 @@ function renderResult(keepView = true) {
   $('#templateSel').disabled = !tplKind(p);
   const obj = productObject(f.side, spec);
   productViewer.set(obj, keepView && !!productViewer.obj); $('#templateSel').value = tplKind(p) ? state.base : '';
+  renderSuggestion(p);
   // colours
-  $('#colorRow').innerHTML = 'Colour ' + p.colors.map(c => `<span class="sw ${c === state.color ? 'on' : ''}" data-c="${c}" style="background:${c}"></span>`).join('');
-  $$('#colorRow .sw').forEach(s => s.onclick = () => { state.color = s.dataset.c; renderResult(); });
-  $('#strapRow').classList.toggle('hidden', !p.strapColors);
-  if (p.strapColors) { $('#strapRow').innerHTML = 'Strap ' + p.strapColors.map(c => `<span class="sw ${c === state.strapColor ? 'on' : ''}" data-c="${c}" style="background:${c}"></span>`).join(''); $$('#strapRow .sw').forEach(s => s.onclick = () => { state.strapColor = s.dataset.c; renderResult(); }); }
+  if (state.design) { renderDesignRows($('#colorRow'), () => renderResult()); $('#strapRow').classList.add('hidden'); }
+  else $('#colorRow').innerHTML = 'Colour ' + p.colors.map(c => `<span class="sw ${c === state.color ? 'on' : ''}" data-c="${c}" style="background:${c}"></span>`).join('');
+  if (!state.design) $$('#colorRow .sw').forEach(s => s.onclick = () => { state.color = s.dataset.c; renderResult(); });
+  if (!state.design) $('#strapRow').classList.toggle('hidden', !p.strapColors);
+  if (p.strapColors && !state.design) { $('#strapRow').innerHTML = 'Strap ' + p.strapColors.map(c => `<span class="sw ${c === state.strapColor ? 'on' : ''}" data-c="${c}" style="background:${c}"></span>`).join(''); $$('#strapRow .sw').forEach(s => s.onclick = () => { state.strapColor = s.dataset.c; renderResult(); }); }
   // zone chips
   $('#zoneChips').innerHTML = spec.zones.map(z => `<button class="zchip ${state.highlight?.length === 1 && state.highlight[0] === z.id ? 'on' : ''}" data-z="${z.id}"><i style="background:${z.color}"></i>${state.staff ? z.label : (ZONE_FRIENDLY[z.id] || z.label)}</button>`).join('');
   $$('#zoneChips .zchip').forEach(b => b.onclick = () => { const z = b.dataset.z; state.highlight = state.highlight?.length === 1 && state.highlight[0] === z ? null : [z]; state.showZones = true; $('#zonesToggle').classList.add('on'); renderResult(); });
@@ -599,6 +654,7 @@ $('#integrateChk').onchange = e => { state.integrate = e.target.checked; renderR
 /* ---------------- order ---------------- */
 function priceLines(spec) {
   const p = state.product, pp = spec.params;
+  if (state.design) return [[p.name + ' (pair) – your design', priceOf(p.id)]]; // v9: one price per product (₱9,999 for now), add-ons included
   const addons = [pp.metPad && 'Metatarsal pad', pp.heelLift && 'Heel lift', pp.mortonExtension && "Morton's extension", pp.lateralFlange && 'Lateral flange', pp.toeCrest && 'Toe crest', pp.sesamoidCutout && "Dancer's pad", pp.offloadPockets && 'Offloading pockets', pp.dualDensity && 'Dual density'].filter(Boolean);
   const lines = [[p.name + ' (pair)', p.examplePrice], ...addons.map(a => [a, R.ADDON_EXAMPLE_PRICE])];
   if (p.kind !== 'insole' && state.integrate) lines.push(['Custom footbed built into sole', 300]);
@@ -609,14 +665,15 @@ function renderOrder() {
   const p = state.product, f = mainFoot(), spec = currentSpec(), sz = sizeFromLength(productDims(longestFoot().side).footL), dims = productDims(f.side);
   const condNames = spec.conditions.map(id => R.CONDITIONS.find(c => c.id === id).name);
   $('#summaryCard').innerHTML = `<div class="row-between" style="margin-bottom:10px"><b>${p.name}</b><span class="sw" style="background:${state.color};width:28px;height:28px"></span></div>
-    <dl><dt>Feet scanned</dt><dd>${Object.keys(state.feet).map(sideName).join(' + ')}</dd><dt>Size</dt><dd>EU ${sz.eu} · US M ${sz.usM} / W ${sz.usW}</dd><dt>Print outline</dt><dd>${dims.L} × ${dims.W} mm</dd>
+    ${state.design ? designDl() : ''}<dl><dt>Feet scanned</dt><dd>${Object.keys(state.feet).map(sideName).join(' + ')}</dd><dt>Size</dt><dd>EU ${sz.eu} · US M ${sz.usM} / W ${sz.usW}</dd><dt>Print outline</dt><dd>${dims.L} × ${dims.W} mm</dd>
     <dt>Arch type</dt><dd>${R.ARCH_TYPES[spec.archType].short}</dd><dt>Material</dt><dd>TPU ${spec.params.shore}${spec.params.dualDensity ? ' + soft top' : ''}</dd>
     <dt>Arch / heel cup</dt><dd>${spec.params.archHeight} / ${spec.params.heelCupDepth} mm</dd><dt>Posting</dt><dd>${spec.params.medialPost ? 'medial ' + spec.params.medialPost + '°' : spec.params.lateralWedge ? 'lateral ' + spec.params.lateralWedge + '°' : 'none'}</dd>
     <dt>Problems</dt><dd>${condNames.length ? condNames.join(', ') : 'none selected'}</dd></dl>
     ${spec.params.referClinician ? '<div class="alert warn">Recommend a podiatrist / doctor check before and after fitting.</div>' : ''}`;
   const lines = priceLines(spec), total = lines.reduce((s, l) => s + l[1], 0);
   $('#priceTotal').textContent = peso(total);
-  $('#priceLines').innerHTML = lines.map(l => `<div class="row-between"><span>${l[0]}</span><span>${peso(l[1])}</span></div>`).join('') + '<p>Example prices for the demo only – not a quote.</p>';
+  $('#priceLines').innerHTML = lines.map(l => `<div class="row-between"><span>${l[0]}</span><span>${peso(l[1])}</span></div>`).join('') + (state.design ? '<p>Includes your custom scan fit, all support features and your colours. Demo – no payment taken.</p>' : '<p>Example prices for the demo only – not a quote.</p>');
+  $('#priceTag').classList.toggle('hidden', !!state.design);
 }
 function download(name, data, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([data], { type })); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
 /* ---------------- production export (shared by order + staff dashboard) ---------------- */
@@ -630,7 +687,9 @@ function buildStl(side, id) {
     // scan-accurate path: total-contact sole / morphed template, converted to Z-up, Z=0, outward normals
     const obj = productObject(side, sp, { display: false, openings: true }), A = obj.userData?.anchors;
     const pts = A && p.kind === 'flipflop' ? [A.post, A.endM, A.endL] : A && p.kind === 'slide' ? [A.endM, A.endL] : [];
-    const pr = toPrintable(obj.geometry, pts), fv = fitFor(side);
+    const eng = engraveSingle(mergeForCsg(obj.geometry), p);
+    const pr = toPrintable(eng.geo, pts), fv = fitFor(side);
+    if (eng.info && !eng.info.error) { const c = ensureClosed(pr.geometry); pr.geometry = c.geo; eng.info.watertightCheck = c.fixed >= 0; if (c.fixed > 0) eng.info.sliverCleanups = (eng.info.sliverCleanups || 0) + c.fixed; }
     const info = { file: name, side: sideName(side), units: 'mm', zUp: true, restsOnZ0: true, flatBottomZ0: !useTpl, watertight: true,
       base: useTpl ? `template ${state.base} morphed to scan (piecewise u-warp heel/arch/ball/toe + width + Z conform)` : 'total-contact sole from 2 mm plantar map',
       totalContact: true, fromScan: true, archFillPct: sp.params.archFill ?? 100, ...pr.stats,
@@ -638,13 +697,19 @@ function buildStl(side, id) {
       landmarks: { footLengthMm: md.L, ballWidthMm: md.W, heelWidthMm: md.heelW, archApexPct: Math.round(md.archU * 100), archHeightMm: md.archH, ballLinePct: Math.round(md.ballU * 100), toeGapDetected: md.toeGap.detected },
       fit: fv ? { verdict: fv.fit.verdict, ...fv.fit.stats, placementTilt: fv.fit.tilt, modifiedZones: fv.fit.modStats.map(m => ({ name: m.name, meanGapMm: m.mean, areaCm2: m.areaCm2 })) } : null };
     if (obj.userData?.openings) info.openings = obj.userData.openings;
+    if (eng.info) info.engraving = eng.info;
     if (pts.length) info.strapHolesMm = Object.fromEntries((p.kind === 'flipflop' ? ['toePost', 'medialStrap', 'lateralStrap'] : ['medialStrapEdge', 'lateralStrapEdge']).map((k, i) => [k, { x: +pr.points[i].x.toFixed(1), y: +pr.points[i].y.toFixed(1), zTop: +pr.points[i].z.toFixed(1) }]));
     return { name, info, data: new STLExporter().parse(new THREE.Mesh(pr.geometry), { binary: true }) };
   }
   const d = productDims(side);
   const solid = useTpl ? (() => { const g = templateGeo(side, sp, false); const m = new THREE.Mesh(g); m.userData.stats = { ...g.userData.stats }; return m; })()
     : buildPrintableSole(p, { L: d.L, W: d.W, params: sp.params, side, integrate: p.kind === 'insole' || state.integrate, openings: openingsFor(p) });
-  const info = { file: name, side: sideName(side), totalContact: false, units: 'mm', zUp: true, restsOnZ0: true, flatBottomZ0: !useTpl, base: useTpl ? 'template ' + state.base + ' (uniform scale)' : 'parametric', fromScan: !!state.feet[side], ...solid.userData.stats, ...(solid.userData.openings ? { openings: solid.userData.openings } : {}) };
+  let engInfo = null;
+  if (!useTpl && designText()) { // v9: engrave in the Y-up frame, then back to Z-up / Z=0
+    const g0 = mergeForCsg(solid.geometry); g0.rotateX(-Math.PI / 2); const r = engraveSingle(g0, p); engInfo = r.info;
+    if (r.info && !r.info.error) { const g1 = r.geo; g1.rotateX(Math.PI / 2); g1.computeBoundingBox(); g1.translate(0, 0, -g1.boundingBox.min.z); const c = ensureClosed(g1); r.info.watertightCheck = c.fixed >= 0; if (c.fixed > 0) r.info.sliverCleanups = (r.info.sliverCleanups || 0) + c.fixed; solid.geometry = c.geo; }
+  }
+  const info = { file: name, ...(engInfo ? { engraving: engInfo } : {}), side: sideName(side), totalContact: false, units: 'mm', zUp: true, restsOnZ0: true, flatBottomZ0: !useTpl, base: useTpl ? 'template ' + state.base + ' (uniform scale)' : 'parametric', fromScan: !!state.feet[side], ...solid.userData.stats, ...(solid.userData.openings ? { openings: solid.userData.openings } : {}) };
   return { name, info, data: new STLExporter().parse(solid, { binary: true }) };
 }
 function buildSpec(id, stlInfos = []) {
@@ -653,7 +718,9 @@ function buildSpec(id, stlInfos = []) {
   const spec = currentSpec(), lines = priceLines(spec);
   return { orderId: id, demo: true, brand: 'Fixifoot Philippines', createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && tplKind(p)) ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
     size: sizeFromLength(longestFoot().length), questionnaire: state.answers, questionnaireRaw: state.qa, conditions: spec.conditions, feet: perFoot,
-    examplePrice: { currency: 'PHP', lines, total: lines.reduce((s, l) => s + l[1], 0), note: 'example only' },
+    examplePrice: { currency: 'PHP', lines, total: lines.reduce((s, l) => s + l[1], 0), note: state.design ? 'v9 product price (configurable per product)' : 'example only' },
+    design: state.design ? designSummary() : null,
+    price: { currency: 'PHP', amount: lines.reduce((s, l) => s + l[1], 0), perProduct: state.design ? priceOf(p.id) : null },
     dualMaterial: p.dual ? { look: p.dual.look, bodies: p.dual.bodies.map(b => ({ id: b.id, name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill })), files: '2-material 3MF (both bodies assembled in place) + one STL per body; single-STL export kept' } : null,
     print: p.print ? { model: p.name, ...p.print, printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' } : { material: 'TPU ' + spec.params.shore, infill: spec.params.infill, walls: 3, nozzleTempC: '220-235', printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' },
     model: p.model ? { id: p.id, name: p.name, tagline: p.tagline, geometry: { ...p.model, recesses: (p.model.recesses || []).map(r => ({ ...r })) }, forcedParams: p.params, smoothToes: true } : null,
@@ -774,7 +841,7 @@ function renderStaff(keepView = true) {
     <tr><td>Infill</td><td>${esc(p.print.pattern)} ${esc(p.print.infill)} · ${p.print.walls} walls · ${p.print.topLayers}/${p.print.bottomLayers} top/bottom · ${esc(p.print.layer)}</td></tr>
     ${p.print.zones.map(z => `<tr><td>${esc(z.zone)}</td><td>${esc(z.infill)} – ${esc(z.why)}</td></tr>`).join('')}
     <tr><td>Temps / speed</td><td>nozzle ${esc(p.print.nozzleC)} °C · bed ${esc(p.print.bedC)} °C · ${esc(p.print.speed)}</td></tr><tr><td>Note</td><td>${esc(p.print.notes)}</td></tr></table>` : '');
-  const ur = $('#useRec'); if (ur) ur.onclick = () => { const pr = R.PRODUCTS.find(x => x.id === rec.id); state.product = pr; state.color = pr.colors[0]; state.strapColor = pr.strapColors?.[0]; renderStaff(false); };
+  const ur = $('#useRec'); if (ur) ur.onclick = () => { const pr = R.PRODUCTS.find(x => x.id === rec.id); state.product = pr; state.color = pr.colors[0]; state.strapColor = pr.strapColors?.[0]; if (state.design) { state.design.productId = pr.id; state.design.changedBy = 'staff'; applyDesign(); } renderStaff(false); };
   if (om) {
     $('#openLbl').textContent = om === 'holes' ? 'Real ventilation holes (cut into the STL)' : 'Real lattice openings (cut into the STL)';
     $('#openChk').checked = state.openings.on;
@@ -805,6 +872,7 @@ function renderStaff(keepView = true) {
   $('#fitBadge').innerHTML = fv && fs ? `<b>${fv.fit.verdict}</b> mean gap ${fs.meanAbs} mm · ${fs.within1}% within 1 mm${fv.scanBased ? '' : ' · generic model'}` : 'Fit check n/a';
   $('#alignBtn').classList.toggle('hidden', !state.rawScans[side]);
   $('#staffRationale').innerHTML = R.rationale(spec, { totalContact: spec.totalContact, scanArchH: spec.scanArchH, length: useTpl && state.base === 'S90' ? '3/4 (sulcus) length – template S90' : p.kind === 'insole' ? 'full length' : 'full sole' }).map(r => `<div class="rat"><div class="row-between"><b>${r.title}</b><span class="tag">${r.value}</span></div><p>${r.why}</p>${r.refs.length ? `<small>Source: ${r.refs.map(x => `<a href="${x.url}" target="_blank" rel="noopener">${x.short}</a>`).join(' · ')}</small>` : ''}</div>`).join('');
+  renderStaffDesign();
   $('#dualCard').classList.toggle('hidden', !p.dual); $('#twoMatChk').checked = state.twoMat;
   if (p.dual) { const dv = dualFor(side, spec); $('#dualInfo').innerHTML = dv ? `<p><b>${esc(p.dual.look)}</b></p><table class="params">${p.dual.bodies.map(b => `<tr><td><span class="sw" style="background:${b.color};width:14px;height:14px;display:inline-block;vertical-align:middle"></span> Extruder ${b.extruder}</td><td>${esc(b.name)} – ${esc(b.material)} (${esc(b.colorName)}), infill ${esc(b.infill)}</td></tr>`).join('')}
     <tr><td>Interface</td><td>shared surface – no gap / overlap; both bodies watertight</td></tr><tr><td>Features</td><td>${dv.stats.openings ? dv.stats.openings + ' ' + (dv.stats.tilesMode === 'holes' ? 'holes' : 'windows/cells') : ''}${dv.stats.inserts.length ? dv.stats.inserts.map(i => esc(i.label)).join(', ') : ''}${!dv.stats.openings && !dv.stats.inserts.length ? 'layered' : ''}</td></tr>
@@ -899,7 +967,7 @@ function renderFit(keepView = false) {
 }
 $('#fitGhost').onchange = () => renderFit(true);
 $$('#fitViews button').forEach(b => b.onclick = () => fitViewer?.view(b.dataset.view, true, fitViewer.medialX));
-$('#staffProduct').onchange = e => { const pr = R.PRODUCTS.find(x => x.id === e.target.value); state.product = pr; state.color = pr.colors[0]; state.strapColor = pr.strapColors?.[0]; renderStaff(false); };
+$('#staffProduct').onchange = e => { const pr = R.PRODUCTS.find(x => x.id === e.target.value); state.product = pr; state.color = pr.colors[0]; state.strapColor = pr.strapColors?.[0]; if (state.design) { state.design.productId = pr.id; state.design.changedBy = 'staff'; applyDesign(); } renderStaff(false); };
 $('#openChk').onchange = e => { state.openings.on = e.target.checked; renderStaff(); };
 $('#openDensity').onchange = e => { state.openings.density = e.target.value; renderStaff(); };
 $('#openDia').onchange = e => { state.openings.d = +e.target.value; renderStaff(); };
@@ -940,7 +1008,7 @@ function snapshot() {
   return {
     feet: JSON.parse(JSON.stringify(state.feet)), archOverride: { ...state.archOverride }, qa: JSON.parse(JSON.stringify(state.qa)), lld: { mm: state.answers.lldMm, side: state.answers.lldSide },
     staffAdds: [...state.staffAdds], staffRemoves: [...state.staffRemoves], conditions: [...state.conditions],
-    settings: { productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact, openings: { ...state.openings },
+    settings: { design: state.design ? JSON.parse(JSON.stringify(state.design)) : null, productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact, openings: { ...state.openings },
       perFoot: Object.fromEntries(Object.entries(sp).map(([s, x]) => [s, { archType: x.archType, archHeight: x.params.archHeight, heelCupDepth: x.params.heelCupDepth, medialPost: x.params.medialPost, lateralWedge: x.params.lateralWedge, heelLift: x.params.heelLift, metPad: x.params.metPad, shore: x.params.shore }])) }
   };
 }
@@ -959,7 +1027,7 @@ function recordOrder(id, by, spec = null, stls = []) {
   if (!c) { c = saveCurrentCustomer($('#custName')?.value.trim() || 'Walk-in customer', $('#custPhone')?.value.trim() || ''); return recordOrder(id, by, spec, stls); }
   const p = ensureProduct(), lines = priceLines(currentSpec());
   Object.assign(c, snapshot(), { updatedAt: new Date().toISOString() });
-  c.orders = c.orders || []; if (!c.orders.some(o => o.id === id)) c.orders.unshift({ id, date: new Date().toISOString(), productId: p.id, product: p.name, color: state.color, base: state.base || 'parametric', sides: Object.keys(state.feet), total: lines.reduce((s, l) => s + l[1], 0), by });
+  c.orders = c.orders || []; if (!c.orders.some(o => o.id === id)) c.orders.unshift({ id, date: new Date().toISOString(), productId: p.id, product: p.name, color: state.color, base: state.base || 'parametric', sides: Object.keys(state.feet), total: lines.reduce((s, l) => s + l[1], 0), by, ...(state.design ? { design: designSummary() } : {}) });
   crmSave(list);
   if (cloudOn()) { const o = c.orders.find(o => o.id === id), sp = spec || buildSpec(id, stls.map(x => x.info)); cloudJob('order', () => saveCustomerCloud(c, rawMeshFiles()).then(() => insertOrderCloud(c, o, sp, stls))); }
 }
@@ -968,6 +1036,7 @@ function loadCustomer(c) {
   state.qa = JSON.parse(JSON.stringify(c.qa || {})); state.staffAdds = new Set(c.staffAdds || []); state.staffRemoves = new Set(c.staffRemoves || []);
   if (c.lld) { state.answers.lldMm = c.lld.mm; state.answers.lldSide = c.lld.side; }
   const s = c.settings || {}; state.product = R.PRODUCTS.find(x => x.id === s.productId) || null; state.color = s.color || state.product?.colors[0]; state.strapColor = s.strapColor || state.product?.strapColors?.[0];
+  state.design = s.design ? JSON.parse(JSON.stringify(s.design)) : null; if (state.design) applyDesign();
   state.base = s.base || ''; state.sizeMode = s.sizeMode || 'scan'; state.integrate = s.integrate !== false; state.totalContact = s.totalContact !== false; state.openings = { on: true, density: 'med', d: 3.5, ...(s.openings || {}) };
   state.customerId = c.id; state.side = state.feet.R ? 'R' : 'L'; staffOrderId = null; recompute();
 }
@@ -1066,8 +1135,97 @@ $('#crmSaveBtn').onclick = () => {
 };
 $('#crmNewBtn').onclick = () => { state.feet = {}; state.uploaded = {}; state.qa = {}; state.staffAdds = new Set(); state.staffRemoves = new Set(); state.archOverride = {}; state.customerId = null; state.product = null; show('s-scan'); };
 
+/* ---------------- v9: design first – catalog -> designer -> summary -> scan ---------------- */
+function renderCatalog() {
+  $('#catalogGrid').innerHTML = R.CATALOG.map(id => R.PRODUCTS.find(p => p.id === id)).filter(Boolean).map(p => {
+    const d = R.DESIGN[p.id], c = d.def.map(PAL);
+    return `<button class="cat-card ${state.design?.productId === p.id ? 'on' : ''}" data-id="${p.id}"><img src="${p.image}" alt="${esc(p.name)}" loading="lazy">
+      <div class="cat-body"><b>${esc(p.name.replace('Fixifoot ', ''))}</b><small>${esc(p.tagline || '')}</small>
+      <div class="cat-meta"><span class="cat-sw">${c.map(x => `<i style="background:${x.hex}"></i>`).join('')}</span><span class="cat-price">${peso(priceOf(p.id))}</span></div></div></button>`; }).join('');
+  $$('#catalogGrid .cat-card').forEach(b => b.onclick = () => { if (state.design?.productId !== b.dataset.id) startDesign(b.dataset.id); show('s-design'); });
+}
+let designViewer = null, dzTimer = null;
+function renderDesignRows(el, onChange) {
+  const dp = designParts();
+  el.innerHTML = dp.map((d, i) => `<div class="dz-row"><div class="dz-lbl"><b>${esc(d.part)}</b> <span class="muted">· ${esc(d.name)}</span><span class="staff-only tiny muted"> · extruder ${d.extruder}</span></div>
+    <div class="dz-sw">${R.PALETTE.map(c => `<button class="sw ${c.id === (i ? state.design.colors.top : state.design.colors.base) ? 'on' : ''}" data-k="${i ? 'top' : 'base'}" data-c="${c.id}" title="${esc(c.name)}" aria-label="${esc(d.part + ': ' + c.name)}" style="background:${c.hex}"></button>`).join('')}</div></div>`).join('');
+  el.querySelectorAll('.sw').forEach(b => b.onclick = () => { state.design.colors[b.dataset.k] = b.dataset.c; applyDesign(); onChange(); });
+}
+function engravingNow() { const p = ensureProduct(); return p.dual ? (dualCache.R?.v?.engraving || dualCache.L?.v?.engraving || null) : (engDispCache.info || null); }
+// close-up of the engraved heel: from above (or below for underside text), toes pointing up on screen so the initials read normally
+function focusHeel(v, at) { const c = v.controls, below = at.where === 'bottom'; c.autoRotate = false; c.target.set(at.x, below ? 0 : 4, at.z); v.camera.position.set(at.x, below ? -165 : 175, at.z + (below ? 1 : -1) * at.dir * 100); c.update(); }
+function renderDesign(keepView = true) {
+  const ds = state.design; if (!ds) return; const p = ensureProduct(), d = R.DESIGN[p.id];
+  $('#dzTitle').textContent = p.name; $('#dzTag').textContent = p.tagline || ''; $('#dzPrice').textContent = peso(priceOf(p.id));
+  renderDesignRows($('#dzRows'), () => renderDesign(true));
+  designViewer ||= new Viewer($('#designViewer'));
+  const obj = productObject('R', currentSpec('R'), { zonesOn: false });
+  designViewer.set(obj, keepView && !!designViewer.obj);
+  const t = $('#dzText');
+  { const e = engravingNow(), k = designText() + '|' + p.id; if (e?.at && !e.error && designViewer.focusKey !== k) { designViewer.focusKey = k; focusHeel(designViewer, e.at); } else if (!designText()) designViewer.focusKey = null; } if (document.activeElement !== t) t.value = ds.text || '';
+  const txt = designText(), eg = engravingNow(), where = d.text === 'bottom' ? 'on the underside of the heel (keeps the top smooth for sensitive feet)' : (d.textU || 0) > .25 ? 'into the midfoot (between the cushions, so it never touches a pressure zone)' : 'into the heel';
+  $('#dzTextNote').innerHTML = !txt ? `Up to ${TEXT_RULES.maxChars} letters or numbers, engraved ${where}.` : !engraverReady() || eg?.pending ? 'Preparing the engraving…'
+    : eg?.error ? `⚠️ ${esc(/long/.test(eg.error) ? 'Too long to fit on the heel – try fewer letters.' : 'Engraving not possible on this model – we will add it as a note for our team.')}`
+    : `✓ “${esc(txt)}” engraved ${where} – ${eg?.capHeightMm ?? TEXT_RULES.capMm} mm letters, ${TEXT_RULES.depthMm} mm deep${p.dual?.type === 'layer' && d.text === 'top' ? ', shown in your ' + esc(designParts()[0].name.toLowerCase()) + ' base colour' : ''}.`;
+  $('#dzSize').innerHTML = `<option value="">My scan will measure it (recommended)</option>` + Array.from({ length: 13 }, (_, i) => 35 + i).map(eu => `<option value="${eu}" ${String(ds.size) === String(eu) ? 'selected' : ''}>EU ${eu} · US M ${eu - 33} / W ${eu - 31.5}</option>`).join('');
+  $('#dzNext').textContent = `Continue – ${peso(priceOf(p.id))}`;
+}
+$('#dzText').oninput = e => { const v = cleanText(e.target.value); if (e.target.value.toUpperCase() !== v) e.target.value = v; state.design.text = v; clearTimeout(dzTimer); dzTimer = setTimeout(() => { if (!engraverReady()) loadEngraver().then(() => renderDesign(true)); else renderDesign(true); }, 280); };
+$('#dzSize').onchange = e => { state.design.size = e.target.value; state.sizeMode = e.target.value || 'scan'; renderDesign(true); };
+$('#dzNext').onclick = () => { try { state.design.snapshot = designViewer?.renderer.domElement.toDataURL('image/jpeg', .85); } catch { } show('s-summary'); };
+function designSummary() {
+  const ds = state.design, p = ensureProduct(), dp = designParts(p), mats = p.dual ? p.dual.bodies.map(b => b.material) : p.kind === 'insole' ? ['TPU 90A', '–'] : ['TPU 95A (sole)', 'TPU 85A (' + (p.kind === 'slide' ? 'upper' : 'strap') + ')'];
+  const eg = engravingNow(), txt = designText();
+  return { productId: p.id, product: p.name, chosenBeforeScan: true, changedBy: ds.changedBy || 'customer', keptSuggestion: ds.keptSuggestion || null,
+    colors: { extruder1: { part: dp[0].part, id: dp[0].id, name: dp[0].name, hex: dp[0].hex, material: mats[0] }, extruder2: { part: dp[1].part, id: dp[1].id, name: dp[1].name, hex: dp[1].hex, material: mats[1] } },
+    text: txt || null, engraving: txt ? (eg && !eg.pending ? eg : { text: txt, note: 'engraving geometry is generated with the print files' }) : null,
+    size: ds.size ? 'EU ' + ds.size + ' (chosen)' : 'from scan', price: { currency: 'PHP', amount: priceOf(p.id) } };
+}
+function designDl() {
+  const dp = designParts(), txt = designText(), sw = c => `<span class="sw" style="background:${c.hex};width:16px;height:16px;display:inline-block;vertical-align:-3px"></span>`;
+  return `<dl class="dz-dl"><dt>${esc(dp[0].part)}</dt><dd>${sw(dp[0])} ${esc(dp[0].name)}</dd><dt>${esc(dp[1].part)}</dt><dd>${sw(dp[1])} ${esc(dp[1].name)}</dd><dt>Initials</dt><dd>${txt ? '“' + esc(txt) + '” engraved on the heel' : '–'}</dd></dl>`;
+}
+function renderSummary() {
+  if (!state.design) return show('s-catalog', false); applyDesign();
+  const p = ensureProduct(), ds = state.design;
+  $('#designSummaryCard').innerHTML = `${ds.snapshot ? `<img class="ds-img" src="${ds.snapshot}" alt="Your design">` : `<img class="ds-img" src="${p.image}" alt="">`}
+    <div class="row-between" style="margin:8px 0 4px"><b>${esc(p.name)}</b><span class="tag">${ds.size ? 'EU ' + esc(ds.size) : 'Size from scan'}</span></div>${designDl()}`;
+  $('#dsPrice').textContent = peso(priceOf(p.id));
+  const has = Object.keys(state.feet).length > 0; $('#dsScan').textContent = has ? 'Continue with my scan →' : 'Next: scan my feet 👣';
+}
+$('#dsScan').onclick = () => { if (Object.keys(state.feet).length) show(state.qa && Object.keys(state.qa).length ? 's-result' : 's-preview'); else show('s-scan'); };
+// gentle suggestion: the rule engine may know a better model, but the customer's choice stays unless they (or staff) switch
+function renderSuggestion(p) {
+  const el = $('#designSuggest'); if (!el) return;
+  const rec = recommendNow(), strong = rec.id !== 'everyday' || /Ball-of-foot/.test(rec.why);
+  if (!state.design || rec.id === p.id || !strong || state.design.keptSuggestion === rec.id) { el.innerHTML = ''; return; }
+  const rp = R.PRODUCTS.find(x => x.id === rec.id);
+  el.innerHTML = `<div class="alert info suggest"><b>💡 A tip from your results</b><p>${esc(rp.name)} may suit you even better – ${esc(rec.why.charAt(0).toLowerCase() + rec.why.slice(1))}. Your choice stays as it is unless you change it.</p>
+    <div class="crm-actions"><button class="btn ghost" id="sgSwitch">Switch to ${esc(rp.name.replace('Fixifoot ', ''))} (keep my colours)</button><button class="btn ghost" id="sgKeep">Keep ${esc(p.name.replace('Fixifoot ', ''))}</button></div></div>`;
+  $('#sgSwitch').onclick = () => { state.design.productId = rp.id; state.design.switchedFrom = p.id; applyDesign(); toast('Switched to ' + rp.name); renderResult(false); };
+  $('#sgKeep').onclick = () => { state.design.keptSuggestion = rec.id; renderResult(); };
+}
+// staff: design card + per-product prices (device setting; config.js window.FIXI_PRICES = { default: 9999, sport: 9999, … } for all devices)
+function renderStaffDesign() {
+  const el = $('#staffDesign'); if (!el) return;
+  if (!state.design) { el.innerHTML = '<p class="tiny muted">Scan-first order (no design chosen before the scan). Colours from the product settings.</p><button class="btn ghost" id="sdStart">Start a design for this customer</button>'; $('#sdStart').onclick = () => { startDesign(ensureProduct().id); show('s-design'); }; }
+  else { const d = designSummary(), eg = engravingNow();
+    el.innerHTML = `<table class="params"><tr><td>Product</td><td>${esc(d.product)} · chosen by ${esc(d.changedBy)}${d.keptSuggestion ? ' · kept over suggested ' + esc(d.keptSuggestion) : ''}</td></tr>
+      ${['extruder1', 'extruder2'].map((k, i) => `<tr><td>Extruder ${i + 1}</td><td><span class="sw" style="background:${d.colors[k].hex};width:14px;height:14px;display:inline-block;vertical-align:middle"></span> ${esc(d.colors[k].part)} – ${esc(d.colors[k].name)} ${esc(d.colors[k].hex)} · ${esc(d.colors[k].material)}</td></tr>`).join('')}
+      <tr><td>Initials</td><td>${d.text ? `“${esc(d.text)}” – ${eg && !eg.error && !eg.pending ? `REAL geometry, ${esc(eg.location)}, ${eg.capHeightMm} mm letters, ${eg.depthMm} mm deep, min feature ${eg.minFeatureMm} mm (${esc(eg.method)})` : eg?.error ? '⚠️ ' + esc(eg.error) + ' – add by hand / note in spec' : 'generated with the print files'}` : '–'}</td></tr>
+      <tr><td>Size</td><td>${esc(d.size)}</td></tr><tr><td>Price</td><td>${peso(d.price.amount)}</td></tr></table><button class="btn ghost" id="sdEdit">✏️ Edit design</button>`;
+    $('#sdEdit').onclick = () => show('s-design'); }
+  const pe = $('#priceEdit'); if (!pe) return;
+  pe.innerHTML = R.CATALOG.map(id => R.PRODUCTS.find(p => p.id === id)).map(p => `<label class="price-row"><span>${esc(p.name.replace('Fixifoot ', ''))}</span><input type="number" min="0" step="1" inputmode="numeric" data-id="${p.id}" value="${priceOf(p.id)}"></label>`).join('');
+}
+$('#priceSave') && ($('#priceSave').onclick = () => { const o = {}; $$('#priceEdit input').forEach(i => { const v = Math.round(+i.value); if (v > 0) o[i.dataset.id] = v; }); try { localStorage.setItem(PRICE_KEY, JSON.stringify(o)); } catch { } toast('Prices saved on this device'); renderStaffDesign(); });
+$('#priceReset') && ($('#priceReset').onclick = () => { localStorage.removeItem(PRICE_KEY); toast('Prices reset to ' + peso(window.FIXI_PRICES?.default ?? R.DEFAULT_PRICE)); renderStaffDesign(); });
+
 /* ---------------- screen enter hooks ---------------- */
 const onEnter = {
+  's-catalog': renderCatalog,
+  's-design': () => { if (!state.design) return show('s-catalog', false); applyDesign(); requestAnimationFrame(() => renderDesign(false)); if (!engraverReady()) loadEngraver().then(() => { if (designText() && $('#s-design').classList.contains('active')) renderDesign(true); }).catch(e => console.warn('engraver', e)); },
+  's-summary': renderSummary,
   's-scan': () => { state.side = state.feet.R && !state.feet.L ? 'L' : 'R'; syncSideSeg(); resetRing(); },
   's-preview': () => { feetStatus(); requestAnimationFrame(renderFoot); },
   's-analysis': renderAnalysis,
@@ -1082,7 +1240,7 @@ const onEnter = {
 };
 
 // guard: steps after scan require a foot
-const guard = id => SCREENS.indexOf(id) >= 2 && !Object.keys(state.feet).length;
+const guard = id => SCREENS.indexOf(id) >= SCREENS.indexOf('s-preview') && !Object.keys(state.feet).length;
 const _show = show;
 window.fixiGo = id => _show(id); // debug helper
 $$('[data-go]').forEach(b => b.addEventListener('click', e => { if (guard(b.dataset.go)) { e.stopImmediatePropagation(); toast('Please scan a foot first'); show('s-scan'); } }, true));

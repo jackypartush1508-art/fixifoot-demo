@@ -1,5 +1,5 @@
 // Fixifoot demo – network-first service worker (offline fallback to last cached copy)
-const CACHE = 'fixifoot-demo-v8-2';
+const CACHE = 'fixifoot-demo-v9';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())));
 self.addEventListener('fetch', e => {

@@ -329,7 +329,7 @@ export function buildProduct(product, opts) {
   if (product.id === 'perforated') g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', openings: op?.mode === 'holes' ? op : null, params: { ...opts.params, _thick: 2.2 } }));
   else if (product.id === 'fullcontact') g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', params: { ...opts.params, _thick: 3.6 } }));
   else if (product.model) g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', openings: op?.mode === 'holes' ? op : null, params: { ...opts.params, _model: product.model } })); // v7 line
-  else if (product.id === 'flipflop') {
+  else if (product.kind === 'flipflop') { // v9: Arch + Custom Scan flip-flop
     const sole = buildSole({ ...opts, kind: 'flipflop', uvMode: 'none' }); g.add(sole);
     const S = sole.userData.surfaceAt, A = sole.userData.anchors, post = A ? A.post.clone() : S(.8, .32);
     const mat = new THREE.MeshStandardMaterial({ color: strapColor, roughness: .6 });
@@ -342,7 +342,7 @@ export function buildProduct(product, opts) {
     }
     const pg = new THREE.CylinderGeometry(3, 3.6, 16, 14); pg.translate(post.x, post.y + 8, post.z); g.add(new THREE.Mesh(pg, mat));
     const badge = new THREE.BoxGeometry(14, 3, 8); badge.translate(apex.x, apex.y + 1, apex.z); g.add(new THREE.Mesh(badge, new THREE.MeshStandardMaterial({ color: '#555', metalness: .6, roughness: .3 })));
-  } else if (product.id === 'slide') {
+  } else if (product.kind === 'slide') {
     const sole = buildSole({ ...opts, kind: 'slide', uvMode: 'none', openings: op?.mode === 'lattice' ? op : null }); g.add(sole);
     const S = sole.userData.surfaceAt; const NA = 40, NB = 26, pos = [], uv = [], idx = [];
     for (let a = 0; a < NA; a++) for (let b = 0; b < NB; b++) {
@@ -356,7 +356,7 @@ export function buildProduct(product, opts) {
     for (let a = 0; a < NA - 1; a++) for (let b = 0; b < NB - 1; b++) { const i = a * NB + b; idx.push(i, i + 1, i + NB, i + 1, i + NB + 1, i + NB); }
     const ug = new THREE.BufferGeometry(); ug.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); ug.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); ug.setIndex(idx); ug.computeVertexNormals();
     const at = hexTexture(true).clone(); at.needsUpdate = true; at.wrapS = at.wrapT = THREE.RepeatWrapping; at.generateMipmaps = false; at.minFilter = THREE.LinearFilter;
-    g.add(new THREE.Mesh(ug, new THREE.MeshStandardMaterial({ color, roughness: .7, side: THREE.DoubleSide, alphaMap: at, alphaTest: .5 })));
+    g.add(new THREE.Mesh(ug, new THREE.MeshStandardMaterial({ color: opts.upperColor || color, roughness: .7, side: THREE.DoubleSide, alphaMap: at, alphaTest: .5 }))); // v9: upper = extruder 2 colour
   }
   return g;
 }

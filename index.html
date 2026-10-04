@@ -35,19 +35,50 @@
     <div class="hero">
       <img class="hero-logo-img" src="assets/logo.png" alt="Fixifoot – orthotic insoles">
       <div class="hero-sub">Philippines · Take the right step</div>
-      <p class="lead">Custom 3D-printed insoles &amp; flip-flops, made from a scan of <b>your</b> feet.</p>
+      <p class="lead">Custom 3D-printed insoles &amp; flip-flops, designed by <b>you</b> and made from a scan of your feet.</p>
       <ol class="how">
-        <li><span>1</span>Scan your foot with the phone</li>
-        <li><span>2</span>Answer a few quick questions</li>
-        <li><span>3</span>Pick your style &amp; colour</li>
-        <li><span>4</span>We print it for you</li>
+        <li><span>1</span>Choose your product</li>
+        <li><span>2</span>Pick your colours &amp; add your initials</li>
+        <li><span>3</span>Scan your feet &amp; answer a few questions</li>
+        <li><span>4</span>We print your pair</li>
       </ol>
     </div>
     <div class="bottom-actions">
-      <button class="btn primary big" data-go="s-scan">Start foot scan</button>
-      <p class="tiny muted center">Takes about 3 minutes · no account needed</p>
+      <button class="btn primary big" data-go="s-catalog" id="startDesignBtn">Design my pair ✨</button>
+      <button class="btn ghost big staff-only" data-go="s-scan" id="scanFirstBtn">Staff: scan first (classic flow)</button>
+      <p class="tiny muted center">Takes about 5 minutes · no account needed</p>
       <p class="disclaimer small">Comfort product – not a medical diagnosis. If you have diabetes or ongoing pain, please see a podiatrist or doctor.</p>
     </div>
+  </section>
+
+  <!-- v9: CATALOG -->
+  <section class="screen" id="s-catalog">
+    <h2>Choose your Fixifoot</h2>
+    <p class="muted" style="margin-top:-6px">Pick a product and make it yours. We scan your feet next, so it fits perfectly.</p>
+    <div class="catalog" id="catalogGrid"></div>
+  </section>
+
+  <!-- v9: DESIGNER -->
+  <section class="screen" id="s-design">
+    <div class="row-between"><h2 id="dzTitle">Design</h2><span class="price-pill" id="dzPrice"></span></div>
+    <p class="muted small" id="dzTag" style="margin-top:-8px"></p>
+    <div class="viewer" id="designViewer"><div class="viewer-hint">Drag to rotate · shown in a standard size</div></div>
+    <div class="card"><h3>🎨 Your colours</h3><div id="dzRows"></div><p class="tiny muted">Real TPU filament colours – what you see is what we print.</p></div>
+    <div class="card"><h3>✍️ Your initials <small class="muted">(optional)</small></h3>
+      <input id="dzText" class="dz-text" maxlength="6" placeholder="e.g. JP" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <p class="tiny muted" id="dzTextNote"></p></div>
+    <div class="card"><label class="field">Shoe size <small class="muted">(optional)</small><select id="dzSize"></select></label></div>
+    <div class="bottom-actions"><button class="btn primary big" id="dzNext">Continue</button></div>
+  </section>
+
+  <!-- v9: DESIGN SUMMARY + PRICE -->
+  <section class="screen" id="s-summary">
+    <h2>Your design</h2>
+    <div class="card summary" id="designSummaryCard"></div>
+    <div class="card price"><div class="row-between"><span>Price per pair</span><b id="dsPrice">₱–</b></div><p class="tiny muted">Custom-made from your foot scan · all support features included</p></div>
+    <div class="card"><b>What happens next</b>
+      <ol class="how small-how"><li><span>1</span>Scan your right foot, then your left (about 1 minute)</li><li><span>2</span>Answer a few quick questions</li><li><span>3</span>We shape your design to your feet</li></ol></div>
+    <div class="bottom-actions"><button class="btn primary big" id="dsScan">Next: scan my feet 👣</button><button class="btn ghost" data-go="s-design">Change design</button></div>
   </section>
 
   <!-- 2. SCAN -->
@@ -167,6 +198,7 @@
     <div class="seg small" id="resultSideSeg"><button class="seg-btn" data-s="L">Left foot</button><button class="seg-btn active" data-s="R">Right foot</button></div>
     <div class="viewer" id="productViewer"><div class="viewer-hint">Drag to rotate</div>
       <button class="zones-toggle on" id="zonesToggle">Zones</button></div>
+    <div id="designSuggest"></div>
     <div class="feet-summary" id="feetSummary"></div>
     <div class="color-row" id="colorRow"></div>
     <div class="color-row hidden" id="strapRow"></div>
@@ -200,7 +232,7 @@
     <div class="card summary" id="summaryCard"></div>
     <div class="card"><h3>Your details</h3><label class="field">Name<input id="custName" autocomplete="name" placeholder="Full name"></label><label class="field">Mobile<input id="custPhone" inputmode="tel" autocomplete="tel" placeholder="09xx xxx xxxx"></label><p class="tiny muted">Saved on this device only (demo) so we can re-print without a new scan.</p></div>
     <div class="card price">
-      <div class="row-between"><span>Price <span class="tag warn">example only</span></span><b id="priceTotal">₱–</b></div>
+      <div class="row-between"><span>Price <span class="tag warn" id="priceTag">example only</span></span><b id="priceTotal">₱–</b></div>
       <div id="priceLines" class="tiny muted"></div>
     </div>
     <div class="bottom-actions">
@@ -246,6 +278,9 @@
           <div class="card"><h3>Arch classification</h3><div id="staffArch"></div></div>
           <div class="card"><h3>Detected problems</h3><div id="staffProblems" class="zone-chips"></div>
             <details style="margin-top:10px"><summary class="tiny"><b>Edit checklist</b></summary><div id="staffCondList"></div></details></div>
+          <div class="card"><h3>🎨 Customer design</h3><div id="staffDesign"></div></div>
+          <div class="card"><h3>💲 Prices</h3><p class="tiny muted">Per product, per pair (₱). Saved on this device; set <code>window.FIXI_PRICES</code> in config.js for every device.</p><div id="priceEdit" class="price-edit"></div>
+            <div class="crm-actions"><button class="btn ghost" id="priceSave">Save prices</button><button class="btn ghost" id="priceReset">Reset</button></div></div>
           <div class="card"><h3>Product &amp; model</h3>
             <label class="field">Product<select id="staffProduct"></select></label>
             <label class="field">3D model / template<select id="staffTemplate"><option value="">Parametric model (flat bottom)</option><option value="L90">Fixifoot template L90 – full length</option><option value="S90">Fixifoot template S90 – 3/4 length</option></select></label>

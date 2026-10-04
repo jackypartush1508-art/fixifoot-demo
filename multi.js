@@ -137,6 +137,7 @@ export function buildTwoMaterial(rows, lenKey, dual, ctx) {
   else if (dual.id === 'work') planOpts = { mode: 'lattice', density: 'med', rimMargin: 6, allow: (u, sn) => (u > .06 && u < .25) || (u > ctx.ballU - .07 && u < ctx.ballU + .1 && Math.abs(sn) < .75) };
   else if (dual.id === 'diabetic') planOpts = { extras: [{ id: 'met', label: 'Extra-soft insert – metatarsal heads', ...P.met }, { id: 'hallux', label: 'Extra-soft insert – hallux', ...P.hallux }, { id: 'arch', label: 'Soft medial arch band', ...P.arch }] };
   else if (dual.id === 'dress') planOpts = { extras: [{ id: 'pad', label: 'Soft metatarsal pad', ...P.pad, minRim: 2 }] };
+  if (ctx.label && planOpts.allow) { const a = planOpts.allow, lb = ctx.label; planOpts.allow = (u, sn) => a(u, sn) && !(Math.abs(u - lb.u) < lb.du && Math.abs(sn) < lb.sn); } // v9: solid under the initials
   const plan = planSplit(S, planOpts);
   // layer split: the top layer keeps topT measured PERPENDICULAR to the surface (slope-compensated, so the heel-cup walls stay
   // >= topT thick), the base keeps >= 1.2 mm; where the whole sole is < 2.4 mm (feathered toe tip only) it is split 50/50.
@@ -211,7 +212,7 @@ export function build3MF(bodies, meta = {}) { // bodies in print frame: [{ id, n
   const asm = bodies.length + 2;
   const model = `<?xml version="1.0" encoding="UTF-8"?>
 <model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:fixifoot="http://fixifoot.ph/3mf/2026">
-<metadata name="Title">${xe(meta.title || 'Fixifoot insole')}</metadata><metadata name="Designer">Fixifoot Philippines</metadata><metadata name="Application">Fixifoot demo v8</metadata>
+<metadata name="Title">${xe(meta.title || 'Fixifoot insole')}</metadata><metadata name="Designer">Fixifoot Philippines</metadata><metadata name="Application">Fixifoot demo v9</metadata>
 <metadata name="Description">${xe(meta.description || '')}</metadata><metadata name="CreationDate">${new Date().toISOString().slice(0, 10)}</metadata>
 <metadata name="fixifoot:printSettings">${xe(JSON.stringify(meta.print || {}))}</metadata>
 <resources><basematerials id="1">${mats}</basematerials>

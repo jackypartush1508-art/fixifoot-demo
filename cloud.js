@@ -46,7 +46,7 @@ export async function fetchCustomers() {
   const [cs, sc, os] = await Promise.all([
     sb.from('customers').select('*').order('updated_at', { ascending: false }).limit(500),
     sb.from('scans').select('id,customer_id,side,source,mesh_path,plantar_map,metrics,created_at').order('created_at', { ascending: false }).limit(2000),
-    sb.from('orders').select('id,order_no,customer_id,product,color,size,status,stl_paths,settings,created_at').order('created_at', { ascending: false }).limit(2000)]);
+    sb.from('orders').select('id,order_no,customer_id,product,color,size,status,stl_paths,settings,design,price_php,created_at').order('created_at', { ascending: false }).limit(2000)]);
   const C = must(cs), S = must(sc), O = must(os);
   return C.map(c => {
     const feet = {}, scanIds = {};
@@ -54,7 +54,7 @@ export async function fetchCustomers() {
     const p = c.profile || {}, sig = {}; for (const sd in feet) sig[sd] = scanSig(feet[sd]);
     return { id: c.id, cloud: true, scanSig: sig, name: c.name, phone: c.phone || '', email: c.email || '', notes: c.notes || '', createdAt: c.created_at, updatedAt: c.updated_at,
       feet, scanIds, archOverride: p.archOverride || {}, qa: p.qa || {}, lld: p.lld, staffAdds: p.staffAdds || [], staffRemoves: p.staffRemoves || [], conditions: p.conditions || [], settings: p.settings || {},
-      orders: O.filter(o => o.customer_id === c.id).map(o => ({ id: o.order_no, uuid: o.id, date: o.created_at, productId: o.settings?.productId || null, product: o.product, color: o.color, base: o.settings?.base || 'parametric', sides: o.settings?.sides || [], total: o.settings?.total || 0, by: o.settings?.by || 'staff', status: o.status, stlPaths: o.stl_paths || [] })) };
+      orders: O.filter(o => o.customer_id === c.id).map(o => ({ id: o.order_no, uuid: o.id, date: o.created_at, productId: o.settings?.productId || null, product: o.product, color: o.color, base: o.settings?.base || 'parametric', sides: o.settings?.sides || [], total: o.price_php ?? o.settings?.total ?? 0, by: o.settings?.by || 'staff', status: o.status, stlPaths: o.stl_paths || [], design: o.design || null })) };
   });
 }
 // upsert customer + profile, insert a scan row per side whose data changed (with optional raw mesh upload)
@@ -79,7 +79,10 @@ export async function insertOrderCloud(c, o, spec, stls = []) {
   const sb = Cloud.client, paths = [];
   for (const s of stls) { const path = `${c.id}/${o.id}/${s.name}`; must(await sb.storage.from('stl').upload(path, new Blob([s.data], { type: 'model/stl' }), { contentType: 'model/stl', upsert: true })); paths.push(path); }
   const row = { order_no: o.id, customer_id: c.id, product: o.product, color: o.color, size: spec?.size ? 'EU ' + spec.size.eu : null, problems: spec?.conditions || [],
-    settings: { productId: o.productId, base: o.base, sides: o.sides, total: o.total, by: o.by }, spec: spec || null, stl_paths: paths };
+    settings: { productId: o.productId, base: o.base, sides: o.sides, total: o.total, by: o.by }, spec: spec || null, stl_paths: paths,
+    // v9: design chosen before the scan (migration 20261004160000_orders_design)
+    design: o.design || spec?.design || null, price_php: o.total ?? null, engraving_text: (o.design || spec?.design)?.text || null,
+    color_ext1: (o.design || spec?.design)?.colors?.extruder1?.hex || null, color_ext2: (o.design || spec?.design)?.colors?.extruder2?.hex || null };
   must(await sb.from('orders').upsert(row, { onConflict: 'order_no' }));
   return paths;
 }
