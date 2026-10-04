@@ -5,8 +5,9 @@ import { TrackballControls } from 'three/addons/TrackballControls.js';
 import { STLLoader } from 'three/addons/STLLoader.js';
 import { OBJLoader } from 'three/addons/OBJLoader.js';
 import { STLExporter } from 'three/addons/STLExporter.js';
-import { buildFoot, buildProduct, buildPrintableSole, drawFootprint, adaptTemplate, wrapFoot, heatColor } from './geometry.js';
-import { OPENING_PRESETS, HOLE_DIAMETERS } from './openings.js';
+import { buildFoot, buildProduct, buildPrintableSole, printableRows, drawFootprint, adaptTemplate, wrapFoot, heatColor } from './geometry.js';
+import { OPENING_PRESETS, HOLE_DIAMETERS, defaultAllow } from './openings.js';
+import { buildTwoMaterial, bodiesToPrint, build3MF } from './multi.js';
 import { Cloud, initCloud, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole } from './cloud.js';
 import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, buildContactSole, morphTemplate, toPrintable, fitCheck, colorByGap, drawFitMap, ALLOW } from './fit.js';
 
@@ -23,6 +24,7 @@ const state = {
   sizeMode: 'scan', base: '', product: null, color: null, strapColor: null, integrate: true, showZones: true, highlight: null,
   history: ['s-welcome'], lastParams: null,
   look: { heat: true, wire: false, scan: false }, previewSide: 'both', totalContact: true, customerId: null, archFill: null, rawScans: {}, nudge: {}, alignSide: 'R', fitSide: 'R',
+  twoMat: true, // v8: show the 2-material split (both bodies in their colours) for the insole line
   openings: { on: true, density: 'med', d: 3.5 } // v6: real ventilation holes (perforated) / lattice (slide) in preview + STL
 };
 window.__fixifoot = state; // handy for debugging
@@ -483,8 +485,31 @@ const thickFor = p => (p.id === 'perforated' ? 2.2 : p.id === 'fullcontact' ? 3.
 // one place that builds the product for display (zones) or for printing / fit check
 const openingMode = p => p?.id === 'perforated' || p?.model?.openings === 'holes' ? 'holes' : p?.id === 'slide' ? 'lattice' : null;
 function openingsFor(p) { const m = openingMode(p); return m && state.openings.on ? { mode: m, density: state.openings.density, ...(m === 'holes' ? { d: state.openings.d || 3.5 } : {}) } : null; }
+// v8: 2-material split of an insole-line model (two scan-fitted bodies sharing one interface)
+const dualCache = {};
+function dualFor(side, spec = currentSpec(side)) {
+  const p = ensureProduct(); if (!p.dual) return null;
+  const md = scanModel(side), model = p.id === 'diabetic' ? { ...p.model, recesses: [] } : p.model; // diabetic: the pockets are filled by the soft inserts
+  const key = JSON.stringify([p.id, side, state.sizeMode, state.totalContact, spec.params, state.openings, state.feet[side]?.mapId, state.feet[side]?.length, md?.L]);
+  if (dualCache[side]?.key === key) return dualCache[side].v;
+  let rows, lenKey, ballU, L;
+  if (md) { const s = buildContactSole(md, { params: { ...spec.params, _model: model }, kind: 'insole', zones: [], showZones: false, color: '#ffffff', lastLen: lastLenFor('insole') }); rows = s.userData.rows; lenKey = 'z'; ballU = md.ballU; L = md.L; s.geometry.dispose(); }
+  else { const d = productDims(side); ({ rows, lenKey } = printableRows(p, { L: d.L, W: d.W, params: spec.params, side, model })); ballU = .72; L = d.footL; }
+  const pos = { met: { u: ballU + .005, sn: 0, ru: .045 * L, rsn: .66 }, hallux: { u: Math.min(ballU + .125, .93), sn: .5, ru: .045 * L, rsn: .3 }, arch: { u: .41, sn: .56, ru: .14 * L, rsn: .2 }, pad: { u: ballU - 15 / L, sn: .05, ru: 12, rsn: .36 } };
+  const v = buildTwoMaterial(rows, lenKey, p.dual, { ballU, L, pos, holes: openingsFor(p), allowHoles: defaultAllow('holes', spec.params, ballU) });
+  dualCache[side] = { key, v }; return v;
+}
+function dualPrint(side) { const p = ensureProduct(), dv = dualFor(side); return dv ? { p, dv, bodies: bodiesToPrint(dv.bodies) } : null; }
+function build3mfFor(side, id) {
+  const r = dualPrint(side); if (!r) return null; const { p, dv, bodies } = r;
+  const meta = { title: `${p.name} – ${sideName(side)} foot (${id})`, description: `${p.dual.look}. Two bodies assembled in place; extruder 1 = ${bodies[0].colorName} ${bodies[0].material}, extruder 2 = ${bodies[1].colorName} ${bodies[1].material}. Scan-fitted (Fixifoot).`,
+    print: { model: p.name, orderId: id, side: sideName(side), ...p.print, base: `Extruder 1 – ${bodies[0].colorName} ${bodies[0].material} (${bodies[0].name})`, top: `Extruder 2 – ${bodies[1].colorName} ${bodies[1].material} (${bodies[1].name})`, singleMaterialProfile: { base: p.print?.base, top: p.print?.top }, dualMaterial: { look: p.dual.look, bodies: bodies.map(b => ({ name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill, volumeCm3: +(b.volumeMm3 / 1000).toFixed(1) })), interface: 'shared surface – no gap / overlap', stats: dv.stats } } };
+  return { name: `${id}-${p.id}-2material-${sideName(side).toLowerCase()}.3mf`, data: build3MF(bodies, meta), bodies, stats: dv.stats };
+}
+function bodyStls(side, id) { const r = dualPrint(side); if (!r) return []; return r.bodies.map(b => ({ name: `${id}-${r.p.id}-${b.id}-${b.colorName.toLowerCase().replace(/[^a-z]+/g, '-')}-ext${b.extruder}-${sideName(side).toLowerCase()}.stl`, data: new STLExporter().parse(new THREE.Mesh(b.geometry), { binary: true }) })); }
 function productObject(side, spec, { display = true, zonesOn = state.showZones, openings = display } = {}) {
   const p = ensureProduct(), md = scanModel(side), useTpl = state.base && tplKind(p) && templateCache[state.base];
+  if (display && p.dual && state.twoMat) { const dv = dualFor(side, spec); if (dv) { const g = new THREE.Group(); dv.bodies.forEach(b => { const m = new THREE.Mesh(b.geometry.clone(), new THREE.MeshStandardMaterial({ color: b.color, roughness: .5, metalness: 0, side: THREE.DoubleSide })); m.name = b.id; g.add(m); }); g.userData.dual = dv.stats; return g; } }
   const op = openings ? openingsFor(p) : null;
   const integ = p.kind === 'insole' || state.integrate;
   const z = { zones: display ? spec.zones : [], showZones: display && zonesOn, highlight: display ? state.highlight : null };
@@ -627,6 +652,7 @@ function buildSpec(id, stlInfos = []) {
   return { orderId: id, demo: true, brand: 'Fixifoot Philippines', createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && tplKind(p)) ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
     size: sizeFromLength(longestFoot().length), questionnaire: state.answers, questionnaireRaw: state.qa, conditions: spec.conditions, feet: perFoot,
     examplePrice: { currency: 'PHP', lines, total: lines.reduce((s, l) => s + l[1], 0), note: 'example only' },
+    dualMaterial: p.dual ? { look: p.dual.look, bodies: p.dual.bodies.map(b => ({ id: b.id, name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill })), files: '2-material 3MF (both bodies assembled in place) + one STL per body; single-STL export kept' } : null,
     print: p.print ? { model: p.name, ...p.print, printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' } : { material: 'TPU ' + spec.params.shore, infill: spec.params.infill, walls: 3, nozzleTempC: '220-235', printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' },
     model: p.model ? { id: p.id, name: p.name, tagline: p.tagline, geometry: { ...p.model, recesses: (p.model.recesses || []).map(r => ({ ...r })) }, forcedParams: p.params, smoothToes: true } : null,
     recommended: recommendNow(),
@@ -777,6 +803,10 @@ function renderStaff(keepView = true) {
   $('#fitBadge').innerHTML = fv && fs ? `<b>${fv.fit.verdict}</b> mean gap ${fs.meanAbs} mm · ${fs.within1}% within 1 mm${fv.scanBased ? '' : ' · generic model'}` : 'Fit check n/a';
   $('#alignBtn').classList.toggle('hidden', !state.rawScans[side]);
   $('#staffRationale').innerHTML = R.rationale(spec, { totalContact: spec.totalContact, scanArchH: spec.scanArchH, length: useTpl && state.base === 'S90' ? '3/4 (sulcus) length – template S90' : p.kind === 'insole' ? 'full length' : 'full sole' }).map(r => `<div class="rat"><div class="row-between"><b>${r.title}</b><span class="tag">${r.value}</span></div><p>${r.why}</p>${r.refs.length ? `<small>Source: ${r.refs.map(x => `<a href="${x.url}" target="_blank" rel="noopener">${x.short}</a>`).join(' · ')}</small>` : ''}</div>`).join('');
+  $('#dualCard').classList.toggle('hidden', !p.dual); $('#twoMatChk').checked = state.twoMat;
+  if (p.dual) { const dv = dualFor(side, spec); $('#dualInfo').innerHTML = dv ? `<p><b>${esc(p.dual.look)}</b></p><table class="params">${p.dual.bodies.map(b => `<tr><td><span class="sw" style="background:${b.color};width:14px;height:14px;display:inline-block;vertical-align:middle"></span> Extruder ${b.extruder}</td><td>${esc(b.name)} – ${esc(b.material)} (${esc(b.colorName)}), infill ${esc(b.infill)}</td></tr>`).join('')}
+    <tr><td>Interface</td><td>shared surface – no gap / overlap; both bodies watertight</td></tr><tr><td>Features</td><td>${dv.stats.openings ? dv.stats.openings + ' ' + (dv.stats.tilesMode === 'holes' ? 'holes' : 'windows/cells') : ''}${dv.stats.inserts.length ? dv.stats.inserts.map(i => esc(i.label)).join(', ') : ''}${!dv.stats.openings && !dv.stats.inserts.length ? 'layered' : ''}</td></tr>
+    <tr><td>Min thickness</td><td>${Object.entries(dv.stats.minThicknessMm).map(([k, v]) => k + ' ' + v + ' mm').join(' · ')}</td></tr></table>${p.actual ? `<figure class="print-prev"><img src="${p.actual}" alt="2-material print preview"><figcaption class="tiny muted">2-material preview rendered from the actual print files</figcaption></figure>` : ''}` : ''; }
   $('#dlStlL').textContent = `⬇ Download STL – Left${state.feet.L ? '' : ' (mirrored)'}`; $('#dlStlR').textContent = `⬇ Download STL – Right${state.feet.R ? '' : ' (mirrored)'}`;
   $('#dlNote').textContent = (spec.totalContact ? (useTpl ? `Template ${state.base} morphed to the scan (non-uniform warp + top conformed to the plantar map): watertight, mm, Z-up, Z=0 bottom.` : 'Total contact from the 2 mm plantar map: watertight, mm, Z-up, flat bottom on Z=0.') : useTpl ? `Template ${state.base}: watertight, mm, Z-up, curved bottom like the original.` : 'Parametric: watertight, mm, Z-up, flat bottom on Z=0.') + (p.kind !== 'insole' ? ' Sole only – strap/upper separate.' : '');
 }
@@ -876,6 +906,11 @@ let staffOrderId = null;
 const getStaffOrderId = () => (staffOrderId ||= newOrderId());
 $('#dlStlR').onclick = () => { const s = buildStl('R', getStaffOrderId()); download(s.name, s.data, 'model/stl'); toast('Right STL downloaded (' + s.info.sizeMm.join(' × ') + ' mm)'); };
 $('#dlStlL').onclick = () => { const s = buildStl('L', getStaffOrderId()); download(s.name, s.data, 'model/stl'); toast('Left STL downloaded (' + s.info.sizeMm.join(' × ') + ' mm)'); };
+$('#dl3mfR').onclick = () => dl3mf('R'); $('#dl3mfL').onclick = () => dl3mf('L');
+function dl3mf(side) { const r = build3mfFor(side, getStaffOrderId()); if (!r) return toast('2-material export is for the Fixifoot insole line'); download(r.name, r.data, 'model/3mf'); toast(`2-material 3MF (${sideName(side)}) downloaded – ${r.bodies.map(b => b.colorName + ' → extruder ' + b.extruder).join(', ')}`, 4000); }
+$('#dlBodiesR').onclick = () => dlBodies('R'); $('#dlBodiesL').onclick = () => dlBodies('L');
+function dlBodies(side) { const f = bodyStls(side, getStaffOrderId()); f.forEach((s, i) => setTimeout(() => download(s.name, s.data, 'model/stl'), 400 * i)); toast(f.length + ' body STLs downloaded'); }
+$('#twoMatChk').onchange = e => { state.twoMat = e.target.checked; renderStaff(); };
 $('#dlSpec').onclick = () => { const id = getStaffOrderId(); const infos = ['R', 'L'].map(s => buildStl(s, id).info); download(`${id}-spec.json`, JSON.stringify(buildSpec(id, infos), null, 2), 'application/json'); toast('Spec downloaded'); };
 
 

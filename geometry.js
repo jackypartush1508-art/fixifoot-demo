@@ -291,6 +291,7 @@ function buildSoleParam(opts) {
     mesh.geometry.dispose(); mesh.geometry = res.geometry; mesh.material = [0, 1, 2].map(() => new THREE.MeshStandardMaterial(common));
     mesh.userData.openings = res.stats;
   }
+  mesh.userData.rows = rows; mesh.userData.lenKey = 'y'; // v8: 2-material split re-meshes from the row grid
   mesh.userData.surfaceAt = (u, sn) => { // helper for straps / uppers
     const i = Math.round((Math.acos(1 - 2 * Math.min(1, Math.max(0, (u - .003) / .994))) / Math.PI) * (NU - 1));
     const j = Math.round((sn + 1) / 2 * (NV - 1)); const v = rows[Math.min(NU - 1, Math.max(0, i))][Math.min(NV - 1, Math.max(0, j))];
@@ -381,6 +382,11 @@ export function processUploaded(object, filename) {
   return { mesh, length: Math.round(L), width: Math.round(width), height: Math.round(H), csi, unitScale: unit, triangles: Math.round(n / 3) };
 }
 
+// v8: row grid of the printable (flat-bottom) parametric sole – input for the 2-material split
+export function printableRows(product, opts) {
+  const m = buildSoleParam({ ...opts, kind: 'insole', uvMode: 'none', zones: [], showZones: false, flatBottom: true, openings: null, params: { ...opts.params, ...(product.model ? { _model: opts.model || product.model } : {}) } });
+  return { rows: m.userData.rows, lenKey: 'y' };
+}
 // ---------- printable export (closed manifold, mm, Z up, flat bottom on Z=0) ----------
 export function buildPrintableSole(product, opts) {
   const kind = product.kind === 'insole' ? 'insole' : product.kind;

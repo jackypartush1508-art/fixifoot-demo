@@ -396,7 +396,7 @@ export function buildContactSole(md, opts) {
   const uiOfFootU = u => (F.zBack - md.zOfU(u)) / F.Li;
   const topAtXZ = (x, z) => { let best = null, bd = Infinity; const ui = (F.zBack - z) / F.Li, i = Math.round((Math.acos(1 - 2 * clamp(ui, 0, 1)) / Math.PI) * (NU - 1)); for (const row of rows.slice(Math.max(0, i - 2), i + 3)) for (const v of row) { const dd = (v.x - x) ** 2 + (v.z - z) ** 2; if (dd < bd) { bd = dd; best = v; } } return new THREE.Vector3(x, best.tz, z); };
   const post = topAtXZ(md.toeGap.x, md.toeGap.z + 4), uStrap = md.ballU - .1;
-  mesh.userData = { surfaceAt: S, kind, frame: F, anchors: { post, endM: S(uiOfFootU(uStrap), 1), endL: S(uiOfFootU(uStrap), -1), midM: S(uiOfFootU(uStrap + .1), .8), midL: S(uiOfFootU(uStrap + .1), -.8) }, contact: true, openings: openStats };
+  mesh.userData = { rows, lenKey: 'z', surfaceAt: S, kind, frame: F, anchors: { post, endM: S(uiOfFootU(uStrap), 1), endL: S(uiOfFootU(uStrap), -1), midM: S(uiOfFootU(uStrap + .1), .8), midL: S(uiOfFootU(uStrap + .1), -.8) }, contact: true, openings: openStats };
   return mesh;
 }
 function gridSoleMesh(rows, NU, NV, o) {
