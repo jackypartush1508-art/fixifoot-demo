@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { mergeVertices, mergeGeometries } from 'three/addons/BufferGeometryUtils.js';
 import { holesTexture, hexTexture, zoneHit, heatColor } from './geometry.js';
+import { buildOpenSole, rowSampler, defaultAllow } from './openings.js';
 
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const gauss = (x, c, w) => Math.exp(-(((x - c) / w) ** 2));
@@ -313,7 +314,7 @@ function insoleFrame(md, kind, lastLen) {
   return { zBack, zFront, Li, edge, allow: { ...a, toe } };
 }
 export function buildContactSole(md, opts) {
-  const { params: p, kind = 'insole', zones = [], showZones = true, highlight = null, color = '#ffffff', uvMode = 'none', lastLen = null } = opts;
+  const { params: p, kind = 'insole', zones = [], showZones = true, highlight = null, color = '#ffffff', uvMode = 'none', lastLen = null, openings = null } = opts;
   const NU = 170, NV = 48, F = insoleFrame(md, kind, lastLen);
   const base = new THREE.Color(color), tmp = new THREE.Color(), dark = base.clone().multiplyScalar(kind === 'insole' ? 0.92 : 0.78);
   const thick0 = kind === 'insole' ? (p._thick || 2.6) : kind === 'flipflop' ? 11 : 13;
@@ -339,12 +340,20 @@ export function buildContactSole(md, opts) {
     rows.push(row);
   }
   const mesh = gridSoleMesh(rows, NU, NV, { base, tmp, dark, zones, showZones, highlight, kind, uvMode, medialX: md.medialX });
+  let openStats = null;
+  if (openings) { // v6: real holes / lattice cut into the scan-based sole (preview == STL)
+    const zs = [...zones].sort((a, b) => (b.rect ? (b.rect.u[1] - b.rect.u[0]) * (b.rect.s[1] - b.rect.s[0]) : Math.PI * b.ellipse.ru * b.ellipse.rs) - (a.rect ? (a.rect.u[1] - a.rect.u[0]) * (a.rect.s[1] - a.rect.s[0]) : Math.PI * a.ellipse.ru * a.ellipse.rs));
+    const colorAt = (u, sn) => { const c = base.clone(); if (showZones) for (const z of zs) if ((z.id !== 'fullLength' || (highlight && highlight.includes('fullLength'))) && zoneHit(z, u, sn)) c.copy(base).lerp(new THREE.Color(z.color), highlight ? (highlight.includes(z.id) ? 0.85 : 0.08) : 0.42); return c; };
+    const res = buildOpenSole(rowSampler(rows, 'z'), { ...openings, allow: openings.allow || defaultAllow(openings.mode, p, md.ballU), colorAt, dark });
+    const common = { vertexColors: true, roughness: kind === 'insole' ? 0.55 : 0.75, metalness: 0, side: THREE.DoubleSide };
+    mesh.geometry.dispose(); mesh.geometry = res.geometry; mesh.material = [0, 1, 2].map(() => new THREE.MeshStandardMaterial(common)); openStats = res.stats;
+  }
   // landmarks for flip-flop straps
   const S = (ui, sn) => { const i = Math.round((Math.acos(1 - 2 * clamp(ui, 0, 1)) / Math.PI) * (NU - 1)), j = Math.round((sn + 1) / 2 * (NV - 1)); const v = rows[clamp(i, 0, NU - 1)][clamp(j, 0, NV - 1)]; return new THREE.Vector3(v.x, v.tz, v.z); };
   const uiOfFootU = u => (F.zBack - md.zOfU(u)) / F.Li;
   const topAtXZ = (x, z) => { let best = null, bd = Infinity; const ui = (F.zBack - z) / F.Li, i = Math.round((Math.acos(1 - 2 * clamp(ui, 0, 1)) / Math.PI) * (NU - 1)); for (const row of rows.slice(Math.max(0, i - 2), i + 3)) for (const v of row) { const dd = (v.x - x) ** 2 + (v.z - z) ** 2; if (dd < bd) { bd = dd; best = v; } } return new THREE.Vector3(x, best.tz, z); };
   const post = topAtXZ(md.toeGap.x, md.toeGap.z + 4), uStrap = md.ballU - .1;
-  mesh.userData = { surfaceAt: S, kind, frame: F, anchors: { post, endM: S(uiOfFootU(uStrap), 1), endL: S(uiOfFootU(uStrap), -1), midM: S(uiOfFootU(uStrap + .1), .8), midL: S(uiOfFootU(uStrap + .1), -.8) }, contact: true };
+  mesh.userData = { surfaceAt: S, kind, frame: F, anchors: { post, endM: S(uiOfFootU(uStrap), 1), endL: S(uiOfFootU(uStrap), -1), midM: S(uiOfFootU(uStrap + .1), .8), midL: S(uiOfFootU(uStrap + .1), -.8) }, contact: true, openings: openStats };
   return mesh;
 }
 function gridSoleMesh(rows, NU, NV, o) {

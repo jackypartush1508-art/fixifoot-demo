@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/BufferGeometryUtils.js';
 
+import { buildOpenSole, rowSampler, defaultAllow } from './openings.js';
 export const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 const gauss = (x, c, w) => Math.exp(-(((x - c) / w) ** 2));
 const ellIn = (u, sn, cu, cs, ru, rs) => 1 - smooth(0.7, 1, Math.hypot((u - cu) / ru, (sn - cs) / rs));
@@ -218,7 +219,7 @@ const zoneArea = z => z.rect ? (z.rect.u[1] - z.rect.u[0]) * (z.rect.s[1] - z.re
 
 export function buildSole(opts) { return buildSoleParam(opts); }
 function buildSoleParam(opts) {
-  const { L = 260, W = 100, params: p, kind = 'insole', side = 'R', zones = [], showZones = true, highlight = null, color = '#ffffff', integrate = true, uvMode = 'holes', flatBottom = false } = opts;
+  const { L = 260, W = 100, params: p, kind = 'insole', side = 'R', zones = [], showZones = true, highlight = null, color = '#ffffff', integrate = true, uvMode = 'holes', flatBottom = false, openings = null } = opts;
   const mir = side === 'R' ? -1 : 1, NU = 120, NV = 36;
   const zs = [...zones].sort((a, b) => zoneArea(b) - zoneArea(a));
   const base = new THREE.Color(color), tmp = new THREE.Color(), dark = base.clone().multiplyScalar(kind === 'insole' ? 0.92 : 0.78);
@@ -230,7 +231,7 @@ function buildSoleParam(opts) {
     for (let j = 0; j < NV; j++) {
       const sn = -1 + 2 * j / (NV - 1), s = l + (sn + 1) * hw;
       const tz = Math.max(bz + 1.2, bz + topHeight(u, sn, p, kind, hw, integrate));
-      row.push({ u, sn, x: mir * s, y: (0.5 - u) * L, tz, bz });
+      row.push({ u, ui: (u - 0.003) / 0.994, sn, x: mir * s, y: (0.5 - u) * L, tz, bz });
     }
     rows.push(row);
   }
@@ -275,6 +276,11 @@ function buildSoleParam(opts) {
   else mats.push(new THREE.MeshStandardMaterial(common), new THREE.MeshStandardMaterial(common));
   mats.push(new THREE.MeshStandardMaterial(common));
   const mesh = new THREE.Mesh(geo, mats); mesh.name = 'sole';
+  if (openings) { // v6: real holes / lattice in the geometry (preview == STL)
+    const res = buildOpenSole(rowSampler(rows, 'y'), { ...openings, allow: openings.allow || defaultAllow(openings.mode, p, .72), colorAt: (u, sn) => topColor(u, sn).clone(), dark });
+    mesh.geometry.dispose(); mesh.geometry = res.geometry; mesh.material = [0, 1, 2].map(() => new THREE.MeshStandardMaterial(common));
+    mesh.userData.openings = res.stats;
+  }
   mesh.userData.surfaceAt = (u, sn) => { // helper for straps / uppers
     const i = Math.round((Math.acos(1 - 2 * Math.min(1, Math.max(0, (u - .003) / .994))) / Math.PI) * (NU - 1));
     const j = Math.round((sn + 1) / 2 * (NV - 1)); const v = rows[Math.min(NU - 1, Math.max(0, i))][Math.min(NV - 1, Math.max(0, j))];
@@ -288,7 +294,8 @@ export function buildProduct(product, opts) {
   const g = new THREE.Group();
   const { color, strapColor = '#d8c6a8' } = opts;
   const buildSole = opts.soleFn || buildSoleParam; // scan-based total-contact sole when available
-  if (product.id === 'perforated') g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'holes', params: { ...opts.params, _thick: 2.2 } }));
+  const op = opts.openings || null; // v6: openings are real geometry; no fake alpha textures (preview must match the STL)
+  if (product.id === 'perforated') g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', openings: op?.mode === 'holes' ? op : null, params: { ...opts.params, _thick: 2.2 } }));
   else if (product.id === 'fullcontact') g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', params: { ...opts.params, _thick: 3.6 } }));
   else if (product.id === 'flipflop') {
     const sole = buildSole({ ...opts, kind: 'flipflop', uvMode: 'none' }); g.add(sole);
@@ -304,7 +311,7 @@ export function buildProduct(product, opts) {
     const pg = new THREE.CylinderGeometry(3, 3.6, 16, 14); pg.translate(post.x, post.y + 8, post.z); g.add(new THREE.Mesh(pg, mat));
     const badge = new THREE.BoxGeometry(14, 3, 8); badge.translate(apex.x, apex.y + 1, apex.z); g.add(new THREE.Mesh(badge, new THREE.MeshStandardMaterial({ color: '#555', metalness: .6, roughness: .3 })));
   } else if (product.id === 'slide') {
-    const sole = buildSole({ ...opts, kind: 'slide', uvMode: 'hex' }); g.add(sole);
+    const sole = buildSole({ ...opts, kind: 'slide', uvMode: 'none', openings: op?.mode === 'lattice' ? op : null }); g.add(sole);
     const S = sole.userData.surfaceAt; const NA = 40, NB = 26, pos = [], uv = [], idx = [];
     for (let a = 0; a < NA; a++) for (let b = 0; b < NB; b++) {
       const u = .40 + .42 * a / (NA - 1), tt = b / (NB - 1), sn = -1 + 2 * tt;
@@ -382,6 +389,7 @@ export function buildPrintableSole(product, opts) {
   g.computeVertexNormals(); g.computeBoundingBox();
   const bb = g.boundingBox;
   const out = new THREE.Mesh(g, new THREE.MeshStandardMaterial());
+  if (mesh.userData.openings) out.userData.openings = mesh.userData.openings;
   out.userData.stats = { volumeMm3: Math.round(vol), triangles: I.length / 3, sizeMm: [bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z].map(v => +v.toFixed(1)) };
   return out;
 }

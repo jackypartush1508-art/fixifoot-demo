@@ -6,6 +6,7 @@ import { STLLoader } from 'three/addons/STLLoader.js';
 import { OBJLoader } from 'three/addons/OBJLoader.js';
 import { STLExporter } from 'three/addons/STLExporter.js';
 import { buildFoot, buildProduct, buildPrintableSole, drawFootprint, adaptTemplate, wrapFoot, heatColor } from './geometry.js';
+import { OPENING_PRESETS, HOLE_DIAMETERS } from './openings.js';
 import { Cloud, initCloud, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole } from './cloud.js';
 import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, buildContactSole, morphTemplate, toPrintable, fitCheck, colorByGap, drawFitMap, ALLOW } from './fit.js';
 
@@ -21,7 +22,8 @@ const state = {
   conditions: new Set(), sources: {}, qa: {}, qIndex: 0, staffAdds: new Set(), staffRemoves: new Set(), staff: sessionStorage.getItem('fxStaff') === '1' && !(window.FIXI_CLOUD?.url && window.FIXI_CLOUD?.anonKey),
   sizeMode: 'scan', base: '', product: null, color: null, strapColor: null, integrate: true, showZones: true, highlight: null,
   history: ['s-welcome'], lastParams: null,
-  look: { heat: true, wire: false, scan: false }, previewSide: 'both', totalContact: true, customerId: null, archFill: null, rawScans: {}, nudge: {}, alignSide: 'R', fitSide: 'R'
+  look: { heat: true, wire: false, scan: false }, previewSide: 'both', totalContact: true, customerId: null, archFill: null, rawScans: {}, nudge: {}, alignSide: 'R', fitSide: 'R',
+  openings: { on: true, density: 'med', d: 3.5 } // v6: real ventilation holes (perforated) / lattice (slide) in preview + STL
 };
 window.__fixifoot = state; // handy for debugging
 
@@ -463,8 +465,11 @@ const scanModel = side => (state.totalContact ? footModel(side) : null);
 function lastLenFor(kind) { if (state.sizeMode === 'scan') return null; const a = ALLOW[kind] || ALLOW.insole; return lengthFromEU(+state.sizeMode) + a.heel + a.toe; }
 const thickFor = p => (p.id === 'perforated' ? 2.2 : p.id === 'fullcontact' ? 3.6 : undefined);
 // one place that builds the product for display (zones) or for printing / fit check
-function productObject(side, spec, { display = true, zonesOn = state.showZones } = {}) {
+const openingMode = p => p?.id === 'perforated' ? 'holes' : p?.id === 'slide' ? 'lattice' : null;
+function openingsFor(p) { const m = openingMode(p); return m && state.openings.on ? { mode: m, density: state.openings.density, ...(m === 'holes' ? { d: state.openings.d || 3.5 } : {}) } : null; }
+function productObject(side, spec, { display = true, zonesOn = state.showZones, openings = display } = {}) {
   const p = ensureProduct(), md = scanModel(side), useTpl = state.base && p.kind === 'insole' && templateCache[state.base];
+  const op = openings ? openingsFor(p) : null;
   const integ = p.kind === 'insole' || state.integrate;
   const z = { zones: display ? spec.zones : [], showZones: display && zonesOn, highlight: display ? state.highlight : null };
   if (useTpl) {
@@ -475,12 +480,12 @@ function productObject(side, spec, { display = true, zonesOn = state.showZones }
   }
   if (md && integ) {
     const lastLen = lastLenFor(p.kind);
-    if (!display) { const s = buildContactSole(md, { params: { ...spec.params, _thick: thickFor(p) }, kind: p.kind, zones: [], showZones: false, color: state.color, lastLen }); return s; }
-    return buildProduct(p, { L: 0, W: 0, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, integrate: true, soleFn: o => buildContactSole(md, { ...o, lastLen }) });
+    if (!display) { const s = buildContactSole(md, { params: { ...spec.params, _thick: thickFor(p) }, kind: p.kind, zones: [], showZones: false, color: state.color, lastLen, openings: op }); return s; }
+    return buildProduct(p, { L: 0, W: 0, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, integrate: true, openings: op, soleFn: o => buildContactSole(md, { ...o, lastLen }) });
   }
   const d = productDims(side);
-  if (!display) return buildPrintableSole(p, { L: d.L, W: d.W, params: spec.params, side, integrate: integ });
-  return buildProduct(p, { L: d.L, W: d.W, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, integrate: integ });
+  if (!display) return buildPrintableSole(p, { L: d.L, W: d.W, params: spec.params, side, integrate: integ, openings: op });
+  return buildProduct(p, { L: d.L, W: d.W, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, integrate: integ, openings: op });
 }
 // fit check: product top vs scanned plantar surface
 const fitCache = {};
@@ -488,7 +493,7 @@ function fitFor(side) {
   const md = footModel(side); if (!md || !state.feet[side]) return null;
   const spec = currentSpec(side), key = JSON.stringify([state.product?.id, state.base, state.sizeMode, state.integrate, state.totalContact, spec.params, state.feet[side].mapId, md.L, archOf(side)]);
   if (fitCache[side]?.key === key) return fitCache[side].v;
-  const obj = productObject(side, spec, { display: false });
+  const obj = productObject(side, spec, { display: false, openings: false });
   const geo = obj.isMesh ? obj.geometry : null; let v = null;
   if (geo) { try { v = { md, spec, geo, fit: fitCheck(md, geo, spec.params), scanBased: !!scanModel(side) }; } catch (e) { console.warn('fit', e); } }
   fitCache[side] = { key, v }; return v;
@@ -580,7 +585,7 @@ function buildStl(side, id) {
   const name = `${id}-${p.id}-${p.kind === 'insole' ? 'insole' : 'sole'}-${sideName(side).toLowerCase()}.stl`;
   if (md && (useTpl || p.kind === 'insole' || state.integrate)) {
     // scan-accurate path: total-contact sole / morphed template, converted to Z-up, Z=0, outward normals
-    const obj = productObject(side, sp, { display: false }), A = obj.userData?.anchors;
+    const obj = productObject(side, sp, { display: false, openings: true }), A = obj.userData?.anchors;
     const pts = A && p.kind === 'flipflop' ? [A.post, A.endM, A.endL] : A && p.kind === 'slide' ? [A.endM, A.endL] : [];
     const pr = toPrintable(obj.geometry, pts), fv = fitFor(side);
     const info = { file: name, side: sideName(side), units: 'mm', zUp: true, restsOnZ0: true, flatBottomZ0: !useTpl, watertight: true,
@@ -589,26 +594,27 @@ function buildStl(side, id) {
       allowanceMm: ALLOW[p.kind] || ALLOW.insole, lastLengthMm: lastLenFor(p.kind),
       landmarks: { footLengthMm: md.L, ballWidthMm: md.W, heelWidthMm: md.heelW, archApexPct: Math.round(md.archU * 100), archHeightMm: md.archH, ballLinePct: Math.round(md.ballU * 100), toeGapDetected: md.toeGap.detected },
       fit: fv ? { verdict: fv.fit.verdict, ...fv.fit.stats, placementTilt: fv.fit.tilt, modifiedZones: fv.fit.modStats.map(m => ({ name: m.name, meanGapMm: m.mean, areaCm2: m.areaCm2 })) } : null };
+    if (obj.userData?.openings) info.openings = obj.userData.openings;
     if (pts.length) info.strapHolesMm = Object.fromEntries((p.kind === 'flipflop' ? ['toePost', 'medialStrap', 'lateralStrap'] : ['medialStrapEdge', 'lateralStrapEdge']).map((k, i) => [k, { x: +pr.points[i].x.toFixed(1), y: +pr.points[i].y.toFixed(1), zTop: +pr.points[i].z.toFixed(1) }]));
     return { name, info, data: new STLExporter().parse(new THREE.Mesh(pr.geometry), { binary: true }) };
   }
   const d = productDims(side);
   const solid = useTpl ? (() => { const g = templateGeo(side, sp, false); const m = new THREE.Mesh(g); m.userData.stats = { ...g.userData.stats }; return m; })()
-    : buildPrintableSole(p, { L: d.L, W: d.W, params: sp.params, side, integrate: p.kind === 'insole' || state.integrate });
-  const info = { file: name, side: sideName(side), totalContact: false, units: 'mm', zUp: true, restsOnZ0: true, flatBottomZ0: !useTpl, base: useTpl ? 'template ' + state.base + ' (uniform scale)' : 'parametric', fromScan: !!state.feet[side], ...solid.userData.stats };
+    : buildPrintableSole(p, { L: d.L, W: d.W, params: sp.params, side, integrate: p.kind === 'insole' || state.integrate, openings: openingsFor(p) });
+  const info = { file: name, side: sideName(side), totalContact: false, units: 'mm', zUp: true, restsOnZ0: true, flatBottomZ0: !useTpl, base: useTpl ? 'template ' + state.base + ' (uniform scale)' : 'parametric', fromScan: !!state.feet[side], ...solid.userData.stats, ...(solid.userData.openings ? { openings: solid.userData.openings } : {}) };
   return { name, info, data: new STLExporter().parse(solid, { binary: true }) };
 }
 function buildSpec(id, stlInfos = []) {
   const p = ensureProduct(), feet = Object.keys(state.feet);
   const perFoot = feet.map(s => { const sp = currentSpec(s); return { side: sideName(s), scan: { ...state.feet[s], map: state.feet[s].map ? `${state.feet[s].map.nx}×${state.feet[s].map.nz} plantar height map @ ${state.feet[s].map.res} mm (stored)` : null, plantar: undefined }, totalContact: !!sp.totalContact, archType: sp.archType, params: sp.params, clinicalRationale: R.rationale(sp, { totalContact: sp.totalContact, scanArchH: sp.scanArchH }).map(r => ({ title: r.title, value: r.value, why: r.why, sources: r.refs.map(x => x.url) })), zones: sp.zones.map(z => ({ id: z.id, label: z.label, reasons: z.reasons })), notes: sp.notes, conflicts: sp.conflicts }; });
   const spec = currentSpec(), lines = priceLines(spec);
-  return { orderId: id, demo: true, brand: 'Fixifoot Philippines', createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric' },
+  return { orderId: id, demo: true, brand: 'Fixifoot Philippines', createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && p.kind === 'insole') ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
     size: sizeFromLength(longestFoot().length), questionnaire: state.answers, questionnaireRaw: state.qa, conditions: spec.conditions, feet: perFoot,
     examplePrice: { currency: 'PHP', lines, total: lines.reduce((s, l) => s + l[1], 0), note: 'example only' },
     print: { material: 'TPU ' + spec.params.shore, infill: spec.params.infill, walls: 3, nozzleTempC: '220-235', printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' },
     stlFiles: stlInfos,
     stlNotes: [p.kind === 'flipflop' ? 'STL = sole/footbed only. Strap and toe post are separate parts.' : p.kind === 'slide' ? 'STL = sole/footbed only. Lattice upper is a separate part.' : 'STL = full insole solid.',
-      p.id === 'perforated' ? 'Ventilation holes are preview-only; add them in the slicer/CAD.' : null, state.base ? 'Template-based STL keeps the curved bottom of the original Fixifoot model.' : 'Parametric STL has a flat bottom on Z=0.'].filter(Boolean),
+      openingMode(p) && openingsFor(p) && !(state.base && p.kind === 'insole') ? (p.id === 'perforated' ? `Ventilation holes are REAL through-holes in the STL (Ø ${state.openings.d || 3.5} mm, ${OPENING_PRESETS.holes[state.openings.density].label}); heel cup, arch support and edge margin kept solid.` : `Lattice openings are REAL through-openings in the sole STL (${OPENING_PRESETS.lattice[state.openings.density].label}); solid rim and strap-anchor areas.`) : openingMode(p) ? (state.base && p.kind === 'insole' ? 'Template base selected: ventilation holes are not cut into template models – use the parametric / scan sole for real holes.' : 'Openings switched off by staff: solid sole.') : null, state.base ? 'Template-based STL keeps the curved bottom of the original Fixifoot model.' : 'Parametric STL has a flat bottom on Z=0.'].filter(Boolean),
     disclaimer: 'Comfort product, not a medical diagnosis. See a podiatrist for diabetes or pain.' };
 }
 $('#sendBtn').onclick = () => {
@@ -712,11 +718,22 @@ function renderStaff(keepView = true) {
   // product + template
   $('#staffProduct').innerHTML = R.PRODUCTS.map(x => `<option value="${x.id}" ${x.id === p.id ? 'selected' : ''}>${x.name}</option>`).join('');
   $('#staffTemplate').value = p.kind === 'insole' ? state.base : ''; $('#staffTemplate').disabled = p.kind !== 'insole';
+  const om = openingMode(p); $('#openWrap').classList.toggle('hidden', !om);
+  if (om) {
+    $('#openLbl').textContent = om === 'holes' ? 'Real ventilation holes (cut into the STL)' : 'Real lattice openings (cut into the STL)';
+    $('#openChk').checked = state.openings.on;
+    $('#openDensity').innerHTML = Object.entries(OPENING_PRESETS[om]).map(([k, v]) => `<option value="${k}" ${k === state.openings.density ? 'selected' : ''}>${v.label}</option>`).join('');
+    $('#openDensity').disabled = !state.openings.on;
+    $('#openDiaWrap').classList.toggle('hidden', om !== 'holes');
+    $('#openDia').innerHTML = HOLE_DIAMETERS.map(d => `<option value="${d}" ${+d === +(state.openings.d || 3.5) ? 'selected' : ''}>Ø ${d} mm</option>`).join(''); $('#openDia').disabled = !state.openings.on;
+  }
   // 3D with zones
   staffViewer ||= new Viewer($('#staffViewer'));
   const useTpl = state.base && p.kind === 'insole' && templateCache[state.base];
   const obj = productObject(side, spec, { zonesOn: true });
   staffViewer.set(obj, keepView && !!staffViewer.obj);
+  if (om) { let st = null; obj.traverse?.(o => { if (o.userData?.openings) st = o.userData.openings; }); if (!st && obj.userData?.openings) st = obj.userData.openings;
+    $('#openInfo').innerHTML = useTpl ? '⚠️ Not cut into template models – choose the parametric model for real openings.' : !state.openings.on ? 'Off – solid sole in preview and STL.' : st ? `${st.openings} ${om === 'holes' ? 'holes' : 'cells'} · open area ${st.openAreaPct}% · min wall ${st.minWallBetweenOpeningsMm ?? '–'} mm · rim ≥ ${st.minRimMm ?? '–'} mm · ${st.triangles.toLocaleString()} triangles` : ''; }
   $('#staffZoneChips').innerHTML = spec.zones.map(z => `<button class="zchip ${state.highlight?.length === 1 && state.highlight[0] === z.id ? 'on' : ''}" data-z="${z.id}"><i style="background:${z.color}"></i>${z.label}</button>`).join('');
   $$('#staffZoneChips .zchip').forEach(b => b.onclick = () => { const z = b.dataset.z; state.highlight = state.highlight?.length === 1 && state.highlight[0] === z ? null : [z]; renderStaff(); });
   // params + conflicts
@@ -823,6 +840,9 @@ function renderFit(keepView = false) {
 $('#fitGhost').onchange = () => renderFit(true);
 $$('#fitViews button').forEach(b => b.onclick = () => fitViewer?.view(b.dataset.view, true, fitViewer.medialX));
 $('#staffProduct').onchange = e => { const pr = R.PRODUCTS.find(x => x.id === e.target.value); state.product = pr; state.color = pr.colors[0]; state.strapColor = pr.strapColors?.[0]; renderStaff(false); };
+$('#openChk').onchange = e => { state.openings.on = e.target.checked; renderStaff(); };
+$('#openDensity').onchange = e => { state.openings.density = e.target.value; renderStaff(); };
+$('#openDia').onchange = e => { state.openings.d = +e.target.value; renderStaff(); };
 $('#staffTemplate').onchange = async e => { state.base = e.target.value; if (state.base) { try { toast('Loading template…'); await loadTemplate(state.base); } catch (err) { toast('Could not load template: ' + err.message); state.base = ''; } } renderStaff(false); };
 let staffOrderId = null;
 const getStaffOrderId = () => (staffOrderId ||= newOrderId());
@@ -855,7 +875,7 @@ function snapshot() {
   return {
     feet: JSON.parse(JSON.stringify(state.feet)), archOverride: { ...state.archOverride }, qa: JSON.parse(JSON.stringify(state.qa)), lld: { mm: state.answers.lldMm, side: state.answers.lldSide },
     staffAdds: [...state.staffAdds], staffRemoves: [...state.staffRemoves], conditions: [...state.conditions],
-    settings: { productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact,
+    settings: { productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact, openings: { ...state.openings },
       perFoot: Object.fromEntries(Object.entries(sp).map(([s, x]) => [s, { archType: x.archType, archHeight: x.params.archHeight, heelCupDepth: x.params.heelCupDepth, medialPost: x.params.medialPost, lateralWedge: x.params.lateralWedge, heelLift: x.params.heelLift, metPad: x.params.metPad, shore: x.params.shore }])) }
   };
 }
@@ -883,7 +903,7 @@ function loadCustomer(c) {
   state.qa = JSON.parse(JSON.stringify(c.qa || {})); state.staffAdds = new Set(c.staffAdds || []); state.staffRemoves = new Set(c.staffRemoves || []);
   if (c.lld) { state.answers.lldMm = c.lld.mm; state.answers.lldSide = c.lld.side; }
   const s = c.settings || {}; state.product = R.PRODUCTS.find(x => x.id === s.productId) || null; state.color = s.color || state.product?.colors[0]; state.strapColor = s.strapColor || state.product?.strapColors?.[0];
-  state.base = s.base || ''; state.sizeMode = s.sizeMode || 'scan'; state.integrate = s.integrate !== false; state.totalContact = s.totalContact !== false;
+  state.base = s.base || ''; state.sizeMode = s.sizeMode || 'scan'; state.integrate = s.integrate !== false; state.totalContact = s.totalContact !== false; state.openings = { on: true, density: 'med', d: 3.5, ...(s.openings || {}) };
   state.customerId = c.id; state.side = state.feet.R ? 'R' : 'L'; staffOrderId = null; recompute();
 }
 function seedCRM() {
