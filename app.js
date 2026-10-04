@@ -10,8 +10,8 @@ import { toCreasedNormals } from 'three/addons/BufferGeometryUtils.js';
 import { loadEngraver, engraverReady, planText, engraveBodies, cleanText, measureText, ensureClosed, TEXT_RULES } from './engrave.js';
 import { buildFoot, buildProduct, buildPrintableSole, printableRows, drawFootprint, adaptTemplate, wrapFoot, heatColor } from './geometry.js';
 import { OPENING_PRESETS, HOLE_DIAMETERS, defaultAllow } from './openings.js';
-import { buildTwoMaterial, bodiesToPrint, build3MF } from './multi.js';
-import { Cloud, initCloud, pingCloud, updateOrderPaymentCloud, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole } from './cloud.js';
+import { buildTwoMaterial, bodiesToPrint, build3MF, zipStore } from './multi.js';
+import { Cloud, initCloud, pingCloud, updateOrderPaymentCloud, updateOrderStatusCloud, scanSig, signedUrl, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole } from './cloud.js';
 import { PAY_METHODS, bizSettings, saveBizSettings, bizConfigured, buildReceiptPdf, downloadBlob, shareBlob, printBlob } from './receipt.js';
 import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, buildContactSole, morphTemplate, toPrintable, fitCheck, colorByGap, drawFitMap, ALLOW } from './fit.js';
 
@@ -1031,6 +1031,9 @@ function saveCurrentCustomer(name, phone, email) {
   if (!c && phone) c = list.find(x => x.phone && x.phone.replace(/\D/g, '') === phone.replace(/\D/g, ''));
   if (!c) { c = { id: newCustId(), createdAt: now, orders: [] }; list.unshift(c); }
   Object.assign(c, { name: name || c.name || 'Walk-in customer', phone: phone ?? c.phone ?? '', email: email ?? c.email ?? '', updatedAt: now }, snapshot());
+  // v11: keep a dated scan history (one entry per distinct scan)
+  c.scanHistory = c.scanHistory || []; c.tags = c.tags || [];
+  for (const [sd, f] of Object.entries(state.feet)) { const sig = scanSig(f); if (!c.scanHistory.some(h => h.sig === sig)) c.scanHistory.push({ sig, side: sd, source: f.source, file: f.file || null, length: f.length, width: f.width, archType: f.archType, csi: f.csi, peakForefootPressure: f.peakForefootPressure, date: now }); }
   state.customerId = c.id; crmSave(list);
   if (cloudOn()) { const files = rawMeshFiles(); cloudJob('save', () => saveCustomerCloud(c, files)); }
   return c;
@@ -1040,7 +1043,7 @@ function recordOrder(id, by, spec = null, stls = [], pay = null) {
   if (!c) { c = saveCurrentCustomer($('#custName')?.value.trim() || 'Walk-in customer', $('#custPhone')?.value.trim() || '', $('#custEmail')?.value.trim() || ''); return recordOrder(id, by, spec, stls, pay); }
   const p = ensureProduct(), lines = priceLines(currentSpec());
   Object.assign(c, snapshot(), { updatedAt: new Date().toISOString() });
-  c.orders = c.orders || []; if (!c.orders.some(o => o.id === id)) c.orders.unshift({ id, date: new Date().toISOString(), productId: p.id, product: p.name, color: state.color, base: state.base || 'parametric', sides: Object.keys(state.feet), total: lines.reduce((s, l) => s + l[1], 0), by, ...(state.design ? { design: designSummary() } : {}),
+  c.orders = c.orders || []; if (!c.orders.some(o => o.id === id)) c.orders.unshift({ id, date: new Date().toISOString(), productId: p.id, product: p.name, color: state.color, base: state.base || 'parametric', sides: Object.keys(state.feet), total: lines.reduce((s, l) => s + l[1], 0), by, status: 'new', statusHistory: [{ status: 'new', at: new Date().toISOString(), by: (state.staff ? staffName() : null) || by }], ...(state.design ? { design: designSummary() } : {}),
     feetInfo: Object.fromEntries(Object.keys(state.feet).map(s => [s, { length: state.feet[s].length, source: state.feet[s].source }])), size: 'EU ' + sizeFromLength(productDims(longestFoot().side).footL).eu,
     payment: { method: pay?.method || null, paid: !!pay?.paid, discount: pay?.discount || 0, notes: pay?.notes || null, staffName: pay?.staffName || (state.staff ? staffName() : null) || null, receiptNo: id } });
   crmSave(list);
@@ -1092,48 +1095,265 @@ async function openStaffAdmin() {
   sheet(`<h3>👥 Staff accounts</h3><p class="muted small">New sign-ups start as <b>pending</b> and see no customer data until you approve them.</p><div class="crm-orders">${rows.map(r => `<div class="row-between"><span><b>${esc(r.name || r.email)}</b><br><small class="muted">${esc(r.email)}</small></span><select data-uid="${esc(r.user_id)}" ${r.user_id === Cloud.session.user.id ? 'disabled' : ''}>${['pending', 'staff', 'admin'].map(x => `<option ${x === r.role ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`).join('')}</div>`);
   $$('#sheet select[data-uid]').forEach(sel => sel.onchange = async () => { try { await setRole(sel.dataset.uid, sel.value); toast('Role updated'); } catch (e) { toast(e.message); } });
 }
+/* ---------------- v11 CRM: customer card, order pipeline, reminders, reports, export ---------------- */
+const STATUSES = [['new', 'New'], ['printing', 'Printing'], ['ready', 'Ready for pickup'], ['delivered', 'Delivered'], ['cancelled', 'Cancelled']];
+const PIPE = ['new', 'printing', 'ready', 'delivered'];
+const stLabel = k => (STATUSES.find(x => x[0] === k) || STATUSES[0])[1];
+const ordStatus = o => o.status || 'new';
+const ordHist = o => (o.statusHistory && o.statusHistory.length) ? o.statusHistory : [{ status: ordStatus(o), at: o.date }];
+const statusSince = o => { const h = ordHist(o), st = ordStatus(o); for (let i = h.length - 1; i >= 0; i--) if (h[i].status === st) return h[i].at; return o.statusAt || o.date; };
+const orderNet = o => Math.max(0, (+o.total || 0) - (+o.payment?.discount || 0));
+const TAG_PRESETS = ['Diabetic', 'Athlete', 'VIP'];
+const TEST_SRC = ['sample', 'demo'];
+const isTestCust = c => /\btest\b/i.test(c.name || '') || (c.tags || []).some(t => /^test$/i.test(t)) || Object.values(c.feet || {}).some(f => TEST_SRC.includes(f.source));
+const isTestOrder = (c, o) => isTestCust(c) || Object.values(o.feetInfo || {}).some(f => TEST_SRC.includes(f.source));
+const dayKey = iso => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date(iso));
+const daysAgo = iso => (Date.now() - new Date(iso).getTime()) / 864e5;
+const dShort = iso => new Date(iso).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
+let crmTab = 'customers', ordView = 'board';
+function crmFilters() { return { q: ($('#crmSearch').value || '').toLowerCase().trim(), tag: $('#fTag').value, product: $('#fProduct').value, status: $('#fStatus').value, from: $('#fFrom').value, to: $('#fTo').value }; }
+function orderMatch(c, o, F, useQ = true) {
+  if (useQ && F.q && ![c.name, c.phone, c.email, c.id, o.id, o.product].join(' ').toLowerCase().includes(F.q)) return false;
+  if (F.tag && !(c.tags || []).includes(F.tag)) return false;
+  if (F.product && o.productId !== F.product) return false;
+  if (F.status && ordStatus(o) !== F.status) return false;
+  const k = dayKey(o.date); if (F.from && k < F.from) return false; if (F.to && k > F.to) return false;
+  return true;
+}
+function custMatch(c, F) {
+  if (F.q && ![c.name, c.phone, c.email, c.id, (c.tags || []).join(' '), ...(c.orders || []).map(o => o.id + ' ' + o.product)].join(' ').toLowerCase().includes(F.q)) return false;
+  if (F.tag && !(c.tags || []).includes(F.tag)) return false;
+  if (F.product || F.status || F.from || F.to) return (c.orders || []).some(o => orderMatch(c, o, { ...F, tag: '' }, false));
+  return true;
+}
+const allOrders = (list = crmAll()) => list.flatMap(c => (c.orders || []).map(o => ({ c, o }))).sort((a, b) => new Date(b.o.date) - new Date(a.o.date));
+function fillFilterOptions(list) {
+  const keepSel = (sel, opts) => { const v = sel.value; sel.innerHTML = sel.options[0].outerHTML + opts.map(([k, n]) => `<option value="${esc(k)}">${esc(n)}</option>`).join(''); sel.value = opts.some(o => o[0] === v) ? v : ''; };
+  const tags = [...new Set([...TAG_PRESETS, ...list.flatMap(c => c.tags || [])])];
+  keepSel($('#fTag'), tags.map(t => [t, t])); keepSel($('#fProduct'), R.PRODUCTS.map(p => [p.id, p.name])); keepSel($('#fStatus'), STATUSES);
+  const F = crmFilters(), n = ['tag', 'product', 'status', 'from', 'to'].filter(k => F[k]).length; $('#crmFilterInfo').textContent = n ? `· ${n} active` : '';
+}
+function readyOverdue(list = crmAll()) { return allOrders(list).filter(({ o }) => ordStatus(o) === 'ready' && daysAgo(statusSince(o)) > 3); }
+function replacementDue(list = crmAll()) {
+  return list.map(c => { const os = (c.orders || []).filter(o => ordStatus(o) !== 'cancelled').sort((a, b) => new Date(b.date) - new Date(a.date)); return os[0] ? { c, o: os[0], age: daysAgo(os[0].date) } : null; })
+    .filter(x => x && x.age >= 182 && x.age <= 366).sort((a, b) => b.age - a.age);
+}
 function renderCRM() {
-  const q = ($('#crmSearch').value || '').toLowerCase().trim(), list = crmAll();
-  const hits = list.filter(c => !q || [c.name, c.phone, c.id, ...(c.orders || []).map(o => o.id)].join(' ').toLowerCase().includes(q));
-  $('#crmCount').innerHTML = `${hits.length} of ${list.length} customers · ${cloudOn() ? `in Supabase cloud · signed in as ${esc(Cloud.profile.email)} (${Cloud.profile.role}) <span id="crmSync"></span>` : Cloud.configured ? 'saved on this device (offline / not signed in)' : 'saved on this device'}`;
-  renderCloudTools();
-  $('#crmList').innerHTML = hits.length ? hits.map(c => {
-    const feet = ['R', 'L'].filter(s => c.feet?.[s]).map(s => `${s}: ${R.ARCH_TYPES[c.archOverride?.[s] || c.feet[s].archType]?.short} · ${c.feet[s].length} mm`).join(' &nbsp;|&nbsp; ');
-    return `<div class="crm-item ${c.id === state.customerId ? 'on' : ''}" data-id="${esc(c.id)}"><div class="crm-av">${esc((c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase())}</div>
-      <div class="crm-main"><b>${esc(c.name)}</b><span>${esc(c.phone || 'no phone')} · ${(c.orders || []).length} order(s)</span><small>${feet || 'no scan'}</small></div><span class="crm-go">›</span></div>`;
-  }).join('') : '<p class="muted center">No customers found.</p>';
-  $$('#crmList .crm-item').forEach(el => el.onclick = () => openCustomer(el.dataset.id));
+  const list = crmAll(), F = crmFilters();
+  fillFilterOptions(list); renderCloudTools();
+  $$('#crmTabs button').forEach(b => b.classList.toggle('on', b.dataset.t === crmTab));
+  $$('#s-crm .crm-panel').forEach(p => p.classList.toggle('hidden', p.dataset.p !== crmTab));
+  $('#crmFilters').classList.toggle('hidden', crmTab === 'reminders');
+  const remN = readyOverdue(list).length + replacementDue(list).length; $('#remBadge').textContent = remN ? remN : '';
+  const where = cloudOn() ? `in Supabase cloud · signed in as ${esc(Cloud.profile.email)} (${Cloud.profile.role}) <span id="crmSync"></span>` : Cloud.configured ? 'saved on this device (offline / not signed in)' : 'saved on this device';
+  if (crmTab === 'customers') {
+    const hits = list.filter(c => custMatch(c, F));
+    $('#crmCount').innerHTML = `${hits.length} of ${list.length} customers · ${where}`;
+    $('#crmList').innerHTML = hits.length ? hits.map(c => {
+      const feet = ['R', 'L'].filter(s => c.feet?.[s]).map(s => `${s}: ${R.ARCH_TYPES[c.archOverride?.[s] || c.feet[s].archType]?.short} · ${c.feet[s].length} mm`).join(' &nbsp;|&nbsp; ');
+      const last = (c.orders || [])[0];
+      return `<div class="crm-item ${c.id === state.customerId ? 'on' : ''}" data-id="${esc(c.id)}"><div class="crm-av">${esc((c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase())}</div>
+        <div class="crm-main"><b>${esc(c.name)}</b><span>${esc(c.phone || 'no phone')} · ${(c.orders || []).length} order(s)${last ? ` · <i class="st st-${ordStatus(last)}">${stLabel(ordStatus(last))}</i>` : ''}</span><small>${feet || 'no scan'}</small>${(c.tags || []).length ? `<span class="tagrow">${c.tags.map(t => `<i class="ctag ctag-${esc(t.toLowerCase())}">${esc(t)}</i>`).join('')}</span>` : ''}</div><span class="crm-go">›</span></div>`;
+    }).join('') : '<p class="muted center">No customers found.</p>';
+    $$('#crmList .crm-item').forEach(el => el.onclick = () => openCustomer(el.dataset.id));
+  }
+  if (crmTab === 'orders') renderOrders(list, F, where);
+  if (crmTab === 'reminders') renderReminders(list);
+  if (crmTab === 'reports') renderReports(list, F);
+  if (crmTab === 'export') { const nc = list.filter(c => custMatch(c, F)).length, no = allOrders(list).filter(({ c, o }) => orderMatch(c, o, F)).length; $('#expInfo').textContent = `Will export ${nc} customer(s) and ${no} order(s) with the current filters.`; }
+}
+function renderOrders(list, F, where) {
+  const rows = allOrders(list).filter(({ c, o }) => orderMatch(c, o, F));
+  $('#ordCount').innerHTML = `${rows.length} order(s) · ${where}`;
+  $$('#ordView button').forEach(b => b.classList.toggle('active', b.dataset.v === ordView));
+  $('#ordBoard').classList.toggle('hidden', ordView !== 'board'); $('#ordList').classList.toggle('hidden', ordView !== 'list');
+  const card = ({ c, o }) => { const st = ordStatus(o), i = PIPE.indexOf(st), d = Math.floor(daysAgo(statusSince(o)));
+    return `<div class="kb-card${st === 'ready' && d > 3 ? ' late' : ''}" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="kb-top"><b>${esc(c.name)}</b><span>${peso(orderNet(o))}</span></div>
+      <small>${esc(o.id)} · ${esc(o.product)}</small><small class="muted">${dShort(o.date)} · ${d < 1 ? 'today' : d + ' d'} in status${o.payment?.paid ? ' · ✅ paid' : ''}</small>
+      <div class="kb-move">${i > 0 ? `<button class="btn ghost" data-mv="${PIPE[i - 1]}" title="Back to ${stLabel(PIPE[i - 1])}">◀</button>` : '<span></span>'}${st !== 'cancelled' && st !== 'delivered' ? `<button class="btn ghost kb-x" data-mv="cancelled" title="Cancel order">✕</button>` : st === 'cancelled' ? `<button class="btn ghost" data-mv="new" title="Re-open">↺</button>` : ''}${i >= 0 && i < PIPE.length - 1 ? `<button class="btn primary" data-mv="${PIPE[i + 1]}">${stLabel(PIPE[i + 1])} ▶</button>` : '<span></span>'}</div></div>`; };
+  if (ordView === 'board') {
+    $('#ordBoard').innerHTML = STATUSES.map(([k, n]) => { const col = rows.filter(r => ordStatus(r.o) === k); return `<div class="kb-col kb-${k}" data-st="${k}"><div class="kb-h"><b>${n}</b><span>${col.length}</span></div>${col.map(card).join('') || '<p class="tiny muted center">–</p>'}</div>`; }).join('');
+    $$('#ordBoard .kb-card').forEach(el => { el.onclick = e => { const b = e.target.closest('[data-mv]'); if (b) { e.stopPropagation(); setOrderStatus(el.dataset.cid, el.dataset.oid, b.dataset.mv); } else openCustomer(el.dataset.cid); }; });
+  } else {
+    $('#ordList').innerHTML = rows.length ? `<div class="ord-rows">${rows.map(({ c, o }) => `<div class="ord-row" data-cid="${esc(c.id)}" data-oid="${esc(o.id)}"><div class="ord-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ${dShort(o.date)}</small><br><small class="muted">${peso(orderNet(o))} · ${o.payment?.paid ? '✅ paid' + (o.payment.method ? ' (' + esc(o.payment.method) + ')' : '') : 'unpaid'} · since ${fmtDate(statusSince(o))}</small></div>
+      <select class="st-sel st-${ordStatus(o)}">${STATUSES.map(([k, n]) => `<option value="${k}" ${k === ordStatus(o) ? 'selected' : ''}>${n}</option>`).join('')}</select></div>`).join('')}</div>` : '<p class="muted center">No orders match.</p>';
+    $$('#ordList .ord-row').forEach(el => { el.querySelector('select').onchange = e => setOrderStatus(el.dataset.cid, el.dataset.oid, e.target.value); el.querySelector('.ord-main').onclick = () => openCustomer(el.dataset.cid); });
+  }
+}
+async function setOrderStatus(cid, oid, st) {
+  const list = crmAll(), c = list.find(x => x.id === cid), o = c?.orders?.find(x => x.id === oid); if (!o || ordStatus(o) === st) return;
+  const at = new Date().toISOString();
+  o.statusHistory = [...ordHist(o), { status: st, at, by: staffName() || (cloudOn() ? Cloud.profile?.email : null) || 'staff' }]; o.status = st; o.statusAt = at;
+  crmSave(list);
+  if (cloudOn()) cloudJob('status', () => updateOrderStatusCloud(oid, st).then(r => { if (r) { o.statusHistory = r.status_history; o.statusAt = r.status_updated_at; } }));
+  toast(`${oid} → ${stLabel(st)}`); renderCRM();
+  if (!$('#sheet').classList.contains('hidden') && $('#sheet').dataset.cid === cid) openCustomer(cid);
+}
+function renderReminders(list) {
+  const due = replacementDue(list), late = readyOverdue(list);
+  const tel = c => c.phone ? `<a class="btn ghost" href="tel:${esc(c.phone.replace(/[^\d+]/g, ''))}">📞 Call</a><a class="btn ghost" href="sms:${esc(c.phone.replace(/[^\d+]/g, ''))}">💬 SMS</a>` : '<span class="tiny muted">no phone</span>';
+  $('#remList').innerHTML = `<div class="card"><h3>📦 Ready but not picked up (&gt; 3 days) <span class="tag">${late.length}</span></h3>${late.length ? late.map(({ c, o }) => `<div class="rem-row" data-cid="${esc(c.id)}"><div class="rem-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>${esc(o.id)} · ${esc(o.product)} · ready since ${dShort(statusSince(o))} (<b>${Math.floor(daysAgo(statusSince(o)))} days</b>)</small></div><div class="rem-act">${tel(c)}<button class="btn primary" data-pick="${esc(o.id)}">Delivered ✓</button></div></div>`).join('') : '<p class="muted small">Nothing waiting – all ready orders were collected within 3 days.</p>'}</div>
+    <div class="card"><h3>🔁 Replacement due (last order 6–12 months ago) <span class="tag">${due.length}</span></h3><p class="tiny muted">Insoles usually need replacing after 6–12 months of daily use.</p>${due.length ? due.map(({ c, o, age }) => `<div class="rem-row" data-cid="${esc(c.id)}"><div class="rem-main"><b>${esc(c.name)}</b> <small class="muted">${esc(c.phone || '')}</small><br><small>last: ${esc(o.product)} · ${dShort(o.date)} (${Math.round(age / 30.4)} months ago)</small></div><div class="rem-act">${tel(c)}<button class="btn primary" data-re="1">↻ Reorder</button></div></div>`).join('') : '<p class="muted small">No customers in the 6–12 month window.</p>'}</div>`;
+  $$('#remList .rem-row').forEach(el => { el.querySelector('.rem-main').onclick = () => openCustomer(el.dataset.cid); });
+  $$('#remList [data-pick]').forEach(b => b.onclick = () => setOrderStatus(b.closest('.rem-row').dataset.cid, b.dataset.pick, 'delivered'));
+  $$('#remList [data-re]').forEach(b => b.onclick = () => openReorder(b.closest('.rem-row').dataset.cid));
+}
+function reportData(list, F) {
+  const all = allOrders(list).filter(({ c, o }) => orderMatch(c, o, { ...F, status: '' }));
+  const excluded = all.filter(({ c, o }) => ordStatus(o) === 'cancelled' || isTestOrder(c, o));
+  const real = all.filter(x => !excluded.includes(x));
+  const group = (keyFn) => { const m = new Map(); for (const { o } of real) { const k = keyFn(o); const g = m.get(k) || { k, n: 0, rev: 0 }; g.n++; g.rev += orderNet(o); m.set(k, g); } return [...m.values()]; };
+  const byDay = group(o => dayKey(o.date)).sort((a, b) => b.k.localeCompare(a.k));
+  const byMonth = group(o => dayKey(o.date).slice(0, 7)).sort((a, b) => b.k.localeCompare(a.k));
+  const top = group(o => R.PRODUCTS.find(p => p.id === o.productId)?.name || o.product || '–').sort((a, b) => b.n - a.n || b.rev - a.rev);
+  const paid = real.filter(({ o }) => o.payment?.paid);
+  const byPay = (() => { const m = new Map(); for (const { o } of paid) { const k = o.payment.method || 'Not specified'; const g = m.get(k) || { k, n: 0, rev: 0 }; g.n++; g.rev += orderNet(o); m.set(k, g); } return [...m.values()].sort((a, b) => b.rev - a.rev); })();
+  const unpaid = real.filter(({ o }) => !o.payment?.paid);
+  return { real, excluded, byDay, byMonth, top, byPay, revenue: real.reduce((s, { o }) => s + orderNet(o), 0), collected: paid.reduce((s, { o }) => s + orderNet(o), 0), outstanding: unpaid.reduce((s, { o }) => s + orderNet(o), 0), unpaidN: unpaid.length };
+}
+function renderReports(list, F) {
+  const d = reportData(list, F);
+  const bars = (rows, label = r => esc(r.k)) => { const mx = Math.max(1, ...rows.map(r => r.rev)); return rows.length ? `<div class="rep-bars">${rows.map(r => `<div class="rep-bar"><span class="rep-l">${label(r)}</span><span class="rep-track"><i style="width:${Math.max(2, r.rev / mx * 100).toFixed(1)}%"></i></span><span class="rep-v">${peso(r.rev)}<small> · ${r.n}</small></span></div>`).join('')}</div>` : '<p class="muted small">No orders yet.</p>'; };
+  const dayL = r => esc(new Date(r.k + 'T12:00:00+08:00').toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' }));
+  const monL = r => esc(new Date(r.k + '-15T12:00:00+08:00').toLocaleDateString('en-PH', { month: 'long', year: 'numeric' }));
+  $('#repBody').innerHTML = `<div class="rep-kpis"><div><b>${peso(d.revenue)}</b><span>Revenue</span></div><div><b>${d.real.length}</b><span>Orders</span></div><div><b>${peso(d.real.length ? Math.round(d.revenue / d.real.length) : 0)}</b><span>Average order</span></div><div><b>${peso(d.outstanding)}</b><span>Unpaid (${d.unpaidN})</span></div></div>
+    <p class="tiny muted">Real orders only: excludes cancelled orders and test / sample-scan orders (${d.excluded.length} excluded). Revenue = price − discount. Dates in Philippine time. Filters above apply.</p>
+    <div class="card"><h3>Sales by day</h3>${bars(d.byDay.slice(0, 31), dayL)}</div>
+    <div class="card"><h3>Sales by month</h3>${bars(d.byMonth.slice(0, 12), monL)}</div>
+    <div class="card"><h3>Top products</h3>${bars(d.top)}</div>
+    <div class="card"><h3>Revenue by payment method</h3><p class="tiny muted">Paid orders: ${peso(d.collected)} collected.</p>${bars(d.byPay)}${d.unpaidN ? `<p class="small">Not yet paid: <b>${peso(d.outstanding)}</b> (${d.unpaidN} order(s))</p>` : ''}</div>`;
+}
+/* ---- export (CSV + xlsx) ---- */
+function exportRows(list, F) {
+  const custs = list.filter(c => custMatch(c, F)), ords = allOrders(list).filter(({ c, o }) => orderMatch(c, o, F));
+  const ch = ['Customer ID', 'Name', 'Phone', 'Email', 'Tags', 'Staff notes', 'Customer since', 'Updated', 'Orders', 'Last order', 'Total spent (PHP)', 'Right foot (mm)', 'Left foot (mm)', 'Scan source', 'Test/sample'];
+  const cr = custs.map(c => { const os = (c.orders || []).filter(o => ordStatus(o) !== 'cancelled'); const last = (c.orders || [])[0];
+    return [String(c.id), c.name || '', c.phone || '', c.email || '', (c.tags || []).join(', '), c.notes || '', c.createdAt ? dayKey(c.createdAt) : '', c.updatedAt ? dayKey(c.updatedAt) : '', (c.orders || []).length, last ? dayKey(last.date) : '', os.reduce((s, o) => s + orderNet(o), 0), c.feet?.R?.length || '', c.feet?.L?.length || '', [...new Set(Object.values(c.feet || {}).map(f => SRC_LABEL[f.source] || f.source))].join(', '), isTestCust(c) ? 'yes' : '']; });
+  const oh = ['Order no', 'Date (PHT)', 'Time (PHT)', 'Customer', 'Phone', 'Product', 'Colours', 'Initials', 'Size', 'Feet', 'Status', 'Status since (PHT)', 'Price (PHP)', 'Discount (PHP)', 'Net (PHP)', 'Payment method', 'Paid', 'Staff', 'Payment notes', 'Created by', 'Test/sample'];
+  const tm = iso => new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Asia/Manila', hour: '2-digit', minute: '2-digit' });
+  const or = ords.map(({ c, o }) => [o.id, dayKey(o.date), tm(o.date), c.name || '', c.phone || '', o.product || '', o.design?.colors ? [o.design.colors.extruder1?.name, o.design.colors.extruder2?.name].filter(Boolean).join(' / ') : '', o.design?.text || '', o.size || '', (o.sides || []).join('+'), stLabel(ordStatus(o)), dayKey(statusSince(o)) + ' ' + tm(statusSince(o)), +o.total || 0, +o.payment?.discount || 0, orderNet(o), o.payment?.method || '', o.payment?.paid ? 'yes' : 'no', o.payment?.staffName || '', o.payment?.notes || '', o.by || '', isTestOrder(c, o) ? 'yes' : '']);
+  return { ch, cr, oh, or };
+}
+const csvCell = v => { const s = String(v ?? ''); return /[",\n\r]/.test(s) || /^[=+\-@]/.test(s) ? '"' + (/^[=+\-@]/.test(s) ? "'" : '') + s.replace(/"/g, '""') + '"' : s; };
+const toCsv = (h, rows) => '\ufeff' + [h, ...rows].map(r => r.map(csvCell).join(',')).join('\r\n');
+const xmlEsc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '');
+function sheetXml(h, rows) {
+  const col = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = (i - m - 1) / 26; } return s; };
+  const cell = (v, r, i, hdr) => typeof v === 'number' && isFinite(v) ? `<c r="${col(i)}${r}"><v>${v}</v></c>` : `<c r="${col(i)}${r}" t="inlineStr"${hdr ? ' s="1"' : ''}><is><t xml:space="preserve">${xmlEsc(v)}</t></is></c>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>${h.map((x, i) => `<col min="${i + 1}" max="${i + 1}" width="${Math.min(40, Math.max(10, x.length + 4))}" customWidth="1"/>`).join('')}</cols><sheetData>${[h, ...rows].map((r, ri) => `<row r="${ri + 1}">${r.map((v, i) => cell(v, ri + 1, i, ri === 0)).join('')}</row>`).join('')}</sheetData></worksheet>`;
+}
+function buildXlsx(sheets) { // [{ name, h, rows }] -> Uint8Array
+  const ct = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((s, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
+  const rels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
+  const wb = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>${sheets.map((s, i) => `<sheet name="${xmlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>`;
+  const wbr = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((s, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`;
+  const st = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`;
+  return zipStore([{ name: '[Content_Types].xml', data: ct }, { name: '_rels/.rels', data: rels }, { name: 'xl/workbook.xml', data: wb }, { name: 'xl/_rels/workbook.xml.rels', data: wbr }, { name: 'xl/styles.xml', data: st }, ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: sheetXml(s.h, s.rows) }))]);
+}
+const expStamp = () => dayKey(new Date().toISOString());
+$('#expCustCsv').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-customers-${expStamp()}.csv`, toCsv(x.ch, x.cr), 'text/csv;charset=utf-8'); toast(`${x.cr.length} customer(s) exported`); };
+$('#expOrdCsv').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-orders-${expStamp()}.csv`, toCsv(x.oh, x.or), 'text/csv;charset=utf-8'); toast(`${x.or.length} order(s) exported`); };
+$('#expXlsx').onclick = () => { const x = exportRows(crmAll(), crmFilters()); download(`fixifoot-crm-${expStamp()}.xlsx`, buildXlsx([{ name: 'Customers', h: x.ch, rows: x.cr }, { name: 'Orders', h: x.oh, rows: x.or }]), 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); toast('Excel workbook exported'); };
+/* ---- customer card ---- */
+function scanHistoryOf(c) {
+  const h = (c.scanHistory || []).slice();
+  for (const sd of ['R', 'L']) { const f = c.feet?.[sd]; if (f && !h.some(x => x.side === sd && ((x.sig && x.sig === scanSig(f)) || (x.meshPath && x.meshPath === f.meshPath) || (x.length === f.length && x.source === f.source && (x.file || '') === (f.file || ''))))) h.push({ side: sd, ...f, date: c.updatedAt || c.createdAt, current: true }); }
+  return h.sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+function saveCustomerMeta(c, msg = 'Saved') {
+  const list = crmAll(), i = list.findIndex(x => x.id === c.id); c.updatedAt = new Date().toISOString(); if (i >= 0) list[i] = c; crmSave(list);
+  if (cloudOn()) cloudJob('save', () => saveCustomerCloud(c)); toast(msg);
 }
 function openCustomer(id) {
   const c = crmAll().find(x => x.id === id); if (!c) return;
+  c.tags = c.tags || [];
   const probs = problemNames(c), s = c.settings || {}, pf = s.perFoot && Object.keys(s.perFoot).length ? s.perFoot : probs.perFoot;
+  const tags = [...new Set([...TAG_PRESETS, ...c.tags])], hist = scanHistoryOf(c);
   sheet(`<div class="row-between"><h3 style="margin:0">${esc(c.name)}</h3><span class="tag" title="${esc(c.id)}">${esc(String(c.id).length > 12 ? String(c.id).slice(0, 8) : c.id)}</span></div>
-    <p class="muted small" style="margin:4px 0 10px">📞 ${esc(c.phone || '–')} · customer since ${fmtDate(c.createdAt)}</p>
-    <h4 class="crm-h">Saved scans</h4><div class="crm-feet">${['R', 'L'].map(sd => { const f = c.feet?.[sd]; return `<div class="crm-foot"><b>${sideName(sd)}</b>${f ? `<span>${R.ARCH_TYPES[c.archOverride?.[sd] || f.archType].short}</span><span>${f.length} × ${f.width} mm · EU ${sizeFromLength(f.length).eu}</span><span class="tiny muted">${f.meshPath ? '☁️ raw scan in Storage · ' : ''}${f.source === 'file' ? 'file ' + esc(f.file) + (f.map ? ' · 2 mm plantar map ✓' : '') : esc(SRC_LABEL[f.source] || f.source)} · CSI ${f.csi}%</span>` : '<span class="muted">not scanned</span>'}</div>`; }).join('')}</div>
-    <h4 class="crm-h">Detected problems</h4><div class="zone-chips">${probs.length ? probs.map(n => `<span class="zchip">${esc(n)}</span>`).join('') : '<span class="muted small">none</span>'}</div>
-    <h4 class="crm-h">Last settings</h4><table class="params">${Object.entries(pf).map(([sd, x]) => `<tr><td>${sideName(sd)}</td><td>${R.ARCH_TYPES[x.archType]?.short} · arch ${x.archHeight} mm · cup ${x.heelCupDepth} mm${x.medialPost ? ' · post ' + x.medialPost + '°' : ''}${x.lateralWedge ? ' · wedge ' + x.lateralWedge + '°' : ''}${x.heelLift ? ' · lift ' + x.heelLift + ' mm' : ''}${x.metPad ? ' · met pad' : ''} · ${x.shore}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">–</td></tr>'}
-      <tr><td>Product</td><td>${esc(R.PRODUCTS.find(p => p.id === s.productId)?.name || '–')}${s.base ? ' · template ' + esc(s.base) : ''}</td></tr></table>
-    <h4 class="crm-h">Order history</h4>${(c.orders || []).length ? `<div class="crm-orders">${c.orders.map(o => `<div class="row-between"><span><b>${esc(o.id)}</b><br><small class="muted">${fmtDate(o.date)} · ${esc(o.product)} · ${(o.sides || []).join('+')}${o.payment ? ' · ' + (o.payment.paid ? '✅ paid' : 'unpaid') + (o.payment.method ? ' (' + esc(o.payment.method) + ')' : '') : ''}</small></span><span class="crm-ord-r">${peso(o.total - (o.payment?.discount || 0))}<button class="btn ghost rc-open" data-oid="${esc(o.id)}">🧾 Receipt</button></span></div>`).join('')}</div>` : '<p class="muted small">No orders yet.</p>'}
-    <button class="btn primary big" id="crmReorder">↻ New order from saved scan</button>
+    <p class="muted small" style="margin:4px 0 6px">Customer since ${fmtDate(c.createdAt)}${c.phone ? ` · <a href="tel:${esc(c.phone.replace(/[^\d+]/g, ''))}">📞 ${esc(c.phone)}</a>` : ''}</p>
+    <div class="tagrow cc-tags">${tags.map(t => `<button class="ctag ctag-${esc(t.toLowerCase())} ${c.tags.includes(t) ? 'on' : ''}" data-tag="${esc(t)}">${c.tags.includes(t) ? '✓ ' : '+ '}${esc(t)}</button>`).join('')}<span class="cc-addtag"><input id="ccTagIn" placeholder="Custom tag" maxlength="24"><button class="btn ghost" id="ccTagAdd">Add</button></span></div>
+    <details class="cc-sec"><summary><b>Details</b> <span class="muted small">${esc(c.phone || '')}${c.email ? ' · ' + esc(c.email) : ''}</span></summary>
+      <label class="field">Name<input id="ccName" value="${esc(c.name || '')}"></label><label class="field">Mobile<input id="ccPhone" inputmode="tel" value="${esc(c.phone || '')}"></label><label class="field">Email<input id="ccEmail" type="email" value="${esc(c.email || '')}"></label><button class="btn ghost" id="ccSaveDet">Save details</button></details>
+    <h4 class="crm-h">Staff notes</h4><textarea id="ccNotes" rows="3" placeholder="Internal notes – not shown to the customer">${esc(c.notes || '')}</textarea><button class="btn ghost small-btn" id="ccSaveNotes">Save notes</button>
+    <h4 class="crm-h">Orders (${(c.orders || []).length})</h4>${(c.orders || []).length ? `<div class="crm-orders">${c.orders.map(o => `<div class="cc-ord"><div class="row-between"><span><b>${esc(o.id)}</b><br><small class="muted">${fmtDate(o.date)} · ${esc(o.product)}${o.design?.text ? ' · “' + esc(o.design.text) + '”' : ''} · ${(o.sides || []).join('+')}${o.payment ? ' · ' + (o.payment.paid ? '✅ paid' : 'unpaid') + (o.payment.method ? ' (' + esc(o.payment.method) + ')' : '') : ''}</small></span><span class="crm-ord-r">${peso(orderNet(o))}<button class="btn ghost rc-open" data-oid="${esc(o.id)}">🧾 Receipt</button></span></div>
+      <div class="cc-st"><select class="st-sel st-${ordStatus(o)}" data-oid="${esc(o.id)}">${STATUSES.map(([k, n]) => `<option value="${k}" ${k === ordStatus(o) ? 'selected' : ''}>${n}</option>`).join('')}</select><small class="muted cc-hist">${ordHist(o).map(h => `${stLabel(h.status)} ${new Date(h.at).toLocaleString('en-PH', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`).join(' → ')}</small></div></div>`).join('')}</div>` : '<p class="muted small">No orders yet.</p>'}
+    <div class="cc-reorder"><button class="btn primary big" id="crmReorder">↻ Same again</button><button class="btn ghost big" id="crmReorderChg">🎨 Change product / colours</button></div>
+    <h4 class="crm-h">Scan history</h4>${hist.length ? `<div class="crm-orders">${hist.map((h, i) => `<div class="row-between"><span><b>${dShort(h.date)}</b> · ${sideName(h.side)} · ${h.length || '–'} × ${h.width || '–'} mm${h.archType ? ' · ' + esc(R.ARCH_TYPES[h.archType]?.short || h.archType) : ''}<br><small class="muted">${h.source === 'file' ? 'file ' + esc(h.file || '') : esc(SRC_LABEL[h.source] || h.source || '')}${h.meshPath ? ' · ☁️ raw scan stored' : ''}${h.current ? ' · current' : ''}</small></span><button class="btn ghost" data-v3d="${i}">View 3D</button></div>`).join('')}</div>` : '<p class="muted small">No scans saved.</p>'}
+    <details class="cc-sec"><summary><b>Detected problems &amp; last settings</b></summary>
+    <div class="zone-chips">${probs.length ? probs.map(n => `<span class="zchip">${esc(n)}</span>`).join('') : '<span class="muted small">none</span>'}</div>
+    <table class="params">${Object.entries(pf).map(([sd, x]) => `<tr><td>${sideName(sd)}</td><td>${R.ARCH_TYPES[x.archType]?.short} · arch ${x.archHeight} mm · cup ${x.heelCupDepth} mm${x.medialPost ? ' · post ' + x.medialPost + '°' : ''}${x.lateralWedge ? ' · wedge ' + x.lateralWedge + '°' : ''}${x.heelLift ? ' · lift ' + x.heelLift + ' mm' : ''}${x.metPad ? ' · met pad' : ''} · ${x.shore}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">–</td></tr>'}
+      <tr><td>Product</td><td>${esc(R.PRODUCTS.find(p => p.id === s.productId)?.name || '–')}${s.design ? ' · ' + esc(PAL(s.design.colors?.base).name) + ' / ' + esc(PAL(s.design.colors?.top).name) : ''}</td></tr></table></details>
     <div class="crm-actions"><button class="btn ghost" id="crmLoad">Open in dashboard</button><button class="btn ghost" id="crmDel"${cloudOn() && !Cloud.isAdmin ? ' disabled title="Admins only"' : ''}>Delete</button></div>
-    <p class="tiny muted">Re-order regenerates both STL files from the stored scan data and settings – no rescan needed.</p>`);
+    <p class="tiny muted">Reorder regenerates the print files from the stored scan data and settings – no rescan needed.</p>`);
+  $('#sheet').dataset.cid = c.id;
   $$('#sheet .rc-open').forEach(b => b.onclick = () => openReceipt(c.id, b.dataset.oid));
+  $$('#sheet .cc-st select').forEach(sel => sel.onchange = () => setOrderStatus(c.id, sel.dataset.oid, sel.value));
+  $$('#sheet [data-tag]').forEach(b => b.onclick = () => { const t = b.dataset.tag; c.tags = c.tags.includes(t) ? c.tags.filter(x => x !== t) : [...c.tags, t]; saveCustomerMeta(c, 'Tags updated'); openCustomer(c.id); });
+  $('#ccTagAdd').onclick = () => { const t = $('#ccTagIn').value.trim().replace(/\s+/g, ' ').slice(0, 24); if (!t) return; const pre = TAG_PRESETS.find(p => p.toLowerCase() === t.toLowerCase()) || t; if (!c.tags.includes(pre)) c.tags = [...c.tags, pre]; saveCustomerMeta(c, 'Tag added'); openCustomer(c.id); };
+  $('#ccSaveDet').onclick = () => { const n = $('#ccName').value.trim(); if (!n) { toast('Name is required'); return; } Object.assign(c, { name: n, phone: $('#ccPhone').value.trim(), email: $('#ccEmail').value.trim() }); saveCustomerMeta(c, 'Details saved'); openCustomer(c.id); renderCRM(); };
+  $('#ccSaveNotes').onclick = () => { c.notes = $('#ccNotes').value.trim(); saveCustomerMeta(c, 'Notes saved'); };
+  $$('#sheet [data-v3d]').forEach(b => b.onclick = () => viewScan3D(c, hist[+b.dataset.v3d]));
   $('#crmLoad').onclick = () => { loadCustomer(c); $('#sheet').classList.add('hidden'); show('s-staff'); toast(c.name + ' loaded'); };
-  $('#crmReorder').onclick = () => {
-    loadCustomer(c); ensureProduct(); $('#sheet').classList.add('hidden');
-    const id = newOrderId(), stls = Object.keys(state.feet).map(sd => buildStl(sd, id));
-    const spec = { ...buildSpec(id, stls.map(x => x.info)), customer: { id: c.id, name: c.name, phone: c.phone }, reorderFromSavedScan: true };
-    download(`${id}-spec.json`, JSON.stringify(spec, null, 2), 'application/json');
-    stls.forEach((x, i) => setTimeout(() => download(x.name, x.data, 'model/stl'), 400 * (i + 1)));
-    recordOrder(id, 'reorder', spec, stls); show('s-staff'); toast(`Re-order ${id}: ${stls.length} STL + spec regenerated from saved scan`, 4200);
-  };
+  $('#crmReorder').onclick = () => doReorder(c, null);
+  $('#crmReorderChg').onclick = () => openReorder(c.id);
   $('#crmDel').onclick = async () => {
     if (cloudOn() && !Cloud.isAdmin) { toast('Only an admin can delete customers'); return; }
     if (!confirm('Delete ' + c.name + (cloudOn() ? ' (cloud record, scans and STL files)?' : ' from this device?'))) return;
     if (cloudOn()) { try { await cloudQueue; await deleteCustomerCloud(c); } catch (e) { toast('Delete failed: ' + e.message, 4500); return; } }
     crmSave(crmAll().filter(x => x.id !== c.id)); if (state.customerId === c.id) state.customerId = null; $('#sheet').classList.add('hidden'); renderCRM(); };
 }
+let scanViewer = null, scanViewerEl = null;
+async function viewScan3D(c, h) {
+  if (!h) return;
+  scanViewerEl ||= Object.assign(document.createElement('div'), { className: 'viewer scan3d', id: 'scanViewer' });
+  sheet(`<div class="row-between"><h3 style="margin:0">${sideName(h.side)} foot · ${dShort(h.date)}</h3><button class="btn ghost small-btn" id="sv3Back">← Back</button></div><p class="small muted" id="sv3Note">Loading…</p><div id="sv3Host"></div><p class="tiny muted">${h.length || '–'} × ${h.width || '–'} mm${h.archType ? ' · ' + esc(R.ARCH_TYPES[h.archType]?.name || h.archType) : ''}${h.csi != null ? ' · CSI ' + h.csi + '%' : ''} · drag to rotate, pinch to zoom.</p>`);
+  $('#sv3Host').appendChild(scanViewerEl); $('#sv3Back').onclick = () => openCustomer(c.id);
+  scanViewer ||= new Viewer(scanViewerEl, { free: true }); scanViewer.resize(); if (scanViewer.shadow) scanViewer.shadow.visible = false;
+  const illus = why => { scanViewer.set(buildFoot({ L: h.length || 250, W: h.width || 95, archType: h.archType || 'normal', side: h.side, peak: h.peakForefootPressure || 0.8 }), false); scanViewer.view('outside', false, h.side === 'L' ? 1 : -1); $('#sv3Note').textContent = 'Illustration from the saved measurements' + (why ? ' – ' + why : '') + '.'; };
+  if (h.meshPath && cloudOn()) {
+    try { const url = await signedUrl('scans', h.meshPath), buf = await (await fetch(url)).arrayBuffer(); const raw = objToGeo(new STLLoader().parse(buf)); const res = alignScan(raw, h.file || 'scan.stl'); scanViewer.set(heightColored(res.geo), false); $('#sv3Note').textContent = 'Original 3D scan from cloud storage (heat = contact zones).'; }
+    catch (e) { console.warn(e); illus('the raw scan could not be loaded (' + e.message + ')'); }
+  } else illus(h.source === 'file' ? 'the raw scan file is kept only in cloud storage' : h.source === 'manual' ? 'measured by hand, no 3D scan' : '');
+}
+function openReorder(cid) {
+  const c = crmAll().find(x => x.id === cid); if (!c) return;
+  const s = c.settings || {}, pid0 = s.design?.productId || s.productId || 'everyday', pid = R.DESIGN[pid0] ? pid0 : Object.keys(R.DESIGN)[0];
+  const ds = { productId: pid, colors: { ...(s.design?.colors || { base: R.DESIGN[pid].def[0], top: R.DESIGN[pid].def[1] }) }, text: s.design?.text || '', size: s.design?.size || '' };
+  const draw = () => {
+    const d = R.DESIGN[ds.productId];
+    sheet(`<div class="row-between"><h3 style="margin:0">↻ Reorder for ${esc(c.name)}</h3><button class="btn ghost small-btn" id="roBack">← Back</button></div><p class="small muted">Uses the saved scan – no rescan needed.</p>
+      <label class="field">Product<select id="roProd">${Object.keys(R.DESIGN).map(id => `<option value="${id}" ${id === ds.productId ? 'selected' : ''}>${esc(R.PRODUCTS.find(p => p.id === id)?.name || id)} · ${peso(priceOf(id))}</option>`).join('')}</select></label>
+      ${d.parts.map((part, i) => { const k = i ? 'top' : 'base'; return `<div class="ro-pal"><b class="small">${esc(part)}</b><div class="dz-sw">${R.PALETTE.map(pc => `<button class="sw ${pc.id === ds.colors[k] ? 'on' : ''}" data-k="${k}" data-c="${pc.id}" title="${esc(pc.name)}" style="background:${pc.hex}"></button>`).join('')}</div><small class="muted">${esc(PAL(ds.colors[k]).name)}</small></div>`; }).join('')}
+      <label class="field">Initials (optional)<input id="roText" maxlength="${TEXT_RULES?.maxChars || 4}" value="${esc(ds.text)}" placeholder="e.g. JP"></label>
+      <button class="btn primary big" id="roGo">Create order &amp; print files</button>`);
+    $('#roBack').onclick = () => openCustomer(c.id);
+    $('#roProd').onchange = e => { const nd = R.DESIGN[e.target.value]; ds.productId = e.target.value; ds.colors = { base: nd.def[0], top: nd.def[1] }; draw(); };
+    $$('#sheet .ro-pal .sw').forEach(b => b.onclick = () => { ds.colors[b.dataset.k] = b.dataset.c; draw(); });
+    $('#roText').oninput = e => { const v = cleanText(e.target.value); if (e.target.value.toUpperCase() !== v) e.target.value = v; ds.text = v; };
+    $('#roGo').onclick = () => doReorder(c, ds);
+  };
+  draw();
+}
+async function doReorder(c, ds) {
+  if (!Object.keys(c.feet || {}).length) { toast('This customer has no saved scan – take a new scan first', 4000); return; }
+  $('#sheet').classList.add('hidden');
+  loadCustomer(c);
+  if (ds) { state.design = JSON.parse(JSON.stringify(ds)); applyDesign(); } else ensureProduct();
+  if (designText() && !engraverReady()) { toast('Preparing initials…'); try { await loadEngraver(); } catch (e) { console.warn(e); } }
+  const id = newOrderId(), stls = Object.keys(state.feet).map(sd => buildStl(sd, id));
+  const spec = { ...buildSpec(id, stls.map(x => x.info)), customer: { id: c.id, name: c.name, phone: c.phone }, reorderFromSavedScan: true };
+  download(`${id}-spec.json`, JSON.stringify(spec, null, 2), 'application/json');
+  stls.forEach((x, i) => setTimeout(() => download(x.name, x.data, 'model/stl'), 400 * (i + 1)));
+  recordOrder(id, 'reorder', spec, stls);
+  toast(`Reorder ${id}: ${stls.length} print file(s) + spec created from the saved scan`, 4200);
+  renderCRM(); openCustomer(c.id);
+}
 $('#crmSearch').oninput = renderCRM;
+['#fTag', '#fProduct', '#fStatus', '#fFrom', '#fTo'].forEach(s => $(s).onchange = renderCRM);
+$('#fClear').onclick = () => { ['#fTag', '#fProduct', '#fStatus', '#fFrom', '#fTo'].forEach(s => $(s).value = ''); renderCRM(); };
+$$('#crmTabs button').forEach(b => b.onclick = () => { crmTab = b.dataset.t; renderCRM(); });
+$$('#ordView button').forEach(b => b.onclick = () => { ordView = b.dataset.v; renderCRM(); });
+window.__fixiCRM = { reportData: () => reportData(crmAll(), crmFilters()), exportRows: () => exportRows(crmAll(), crmFilters()), buildXlsx, toCsv, readyOverdue, replacementDue, setOrderStatus };
 $('#crmBtn').onclick = () => show('s-crm');
 $('#crmSaveBtn').onclick = () => {
   const cur = crmAll().find(x => x.id === state.customerId);

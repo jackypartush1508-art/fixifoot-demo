@@ -344,3 +344,73 @@ body.staff .mode-banner button.primary{background:#5cc2ff;color:#082a4f}
 .rc-total{font-size:17px;margin:10px 0}
 .staff-settings{margin-top:14px}
 .thanks-card .rc-btns .btn{font-size:13px}
+/* ---- v11 CRM ---- */
+.crm-tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 8px;margin:0 -2px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.crm-tabs::-webkit-scrollbar{display:none}
+.crm-tabs button{flex:0 0 auto;border:0;border-radius:999px;padding:9px 14px;background:#e9f2ff;color:#015ad8;font-weight:700;font-size:14px;cursor:pointer;white-space:nowrap}
+.crm-tabs button.on{background:#015ad8;color:#fff}
+.crm-tabs b{display:inline-block;min-width:18px;border-radius:9px;background:#ff5a36;color:#fff;font-size:11px;padding:1px 5px;margin-left:2px}
+.crm-tabs b:empty{display:none}
+.crm-filters details{margin:4px 0 8px}
+.crm-filters summary{cursor:pointer;padding:4px 0}
+.flt-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}
+.flt-grid .field{margin:0}
+.flt-grid select,.flt-grid input{width:100%;min-width:0}
+.tagrow{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px;align-items:center}
+.ctag{font-style:normal;font-size:12px;font-weight:700;border-radius:999px;padding:3px 9px;background:#eef1f5;color:#44546a;border:1.5px solid transparent}
+button.ctag{cursor:pointer;padding:6px 11px;font-size:13px;background:#fff;border-color:#cdd8e6}
+button.ctag.on{background:#e8f3ff;border-color:#015ad8;color:#015ad8}
+.ctag-diabetic,button.ctag-diabetic.on{background:#fff0f0;color:#c62828;border-color:#f3b5b5}
+.ctag-athlete,button.ctag-athlete.on{background:#eafaf0;color:#1b7f43;border-color:#a9dfbf}
+.ctag-vip,button.ctag-vip.on{background:#fff7e0;color:#9a6a00;border-color:#f0d58a}
+.cc-addtag{display:inline-flex;gap:4px}
+.cc-addtag input{width:110px;padding:6px 8px;border-radius:10px;border:1.5px solid #cdd8e6;font:inherit;font-size:13px}
+.cc-addtag .btn{padding:6px 10px}
+.cc-sec{background:#f6f9fd;border-radius:12px;padding:8px 10px;margin:10px 0}
+.cc-sec summary{cursor:pointer}
+#ccNotes{width:100%;box-sizing:border-box;border-radius:12px;border:1.5px solid #cdd8e6;padding:8px 10px;font:inherit;font-size:14px;resize:vertical}
+.small-btn{padding:6px 12px;margin-top:6px}
+.cc-ord{border-bottom:1px solid #dde7f3;padding-bottom:8px}.cc-ord:last-child{border:0;padding:0}
+.cc-st{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+.cc-hist{font-size:11.5px;line-height:1.35}
+.cc-reorder{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.cc-reorder .btn{font-size:14px;padding:12px 8px}
+.st-sel{border-radius:10px;padding:7px 8px;font:inherit;font-size:13px;font-weight:700;border:1.5px solid #cdd8e6;background:#fff}
+.st,.st-sel{font-style:normal}
+i.st{font-size:11.5px;font-weight:700;border-radius:6px;padding:1px 6px}
+.st-new{color:#015ad8;background:#e8f3ff}.st-printing{color:#7a4ad8;background:#f1ebff}.st-ready{color:#a05d00;background:#fff3dc}.st-delivered{color:#1b7f43;background:#e7f8ee}.st-cancelled{color:#777;background:#f0f0f0}
+.kanban{display:flex;gap:10px;overflow-x:auto;scroll-snap-type:x mandatory;padding:4px 2px 12px;-webkit-overflow-scrolling:touch}
+.kb-col{flex:0 0 78%;max-width:300px;scroll-snap-align:start;background:#f1f6fc;border-radius:16px;padding:8px;display:flex;flex-direction:column;gap:8px;border-top:4px solid #015ad8}
+.kb-printing{border-top-color:#7a4ad8}.kb-ready{border-top-color:#f0a020}.kb-delivered{border-top-color:#22a05a}.kb-cancelled{border-top-color:#aaa}
+.kb-h{display:flex;justify-content:space-between;align-items:center;padding:2px 4px}
+.kb-h span{background:#fff;border-radius:999px;padding:1px 9px;font-weight:700;font-size:13px}
+.kb-card{background:#fff;border-radius:12px;padding:10px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:2px;cursor:pointer;font-size:13.5px}
+.kb-card.late{border-left:4px solid #ff5a36}
+.kb-top{display:flex;justify-content:space-between;gap:6px}
+.kb-move{display:flex;justify-content:space-between;gap:6px;margin-top:6px}
+.kb-move .btn{padding:7px 10px;font-size:13px;min-height:36px}
+.kb-move .kb-x{color:#a33}
+.seg.small .seg-btn{padding:6px 12px;font-size:13px}
+.ord-rows{display:flex;flex-direction:column;gap:8px}
+.ord-row{display:flex;gap:8px;align-items:center;background:#fff;border-radius:14px;padding:10px 12px;box-shadow:var(--shadow);font-size:13.5px}
+.ord-main{flex:1;min-width:0;cursor:pointer}
+.rem-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border-bottom:1px solid #e3ebf5;padding:9px 0;font-size:13.5px}
+.rem-main{flex:1 1 200px;cursor:pointer}
+.rem-act{display:flex;gap:6px;flex-wrap:wrap}.rem-act .btn{padding:7px 10px;font-size:13px;text-decoration:none}
+.rep-kpis{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
+.rep-kpis div{background:#fff;border-radius:14px;padding:12px;box-shadow:var(--shadow);display:flex;flex-direction:column}
+.rep-kpis b{font-size:20px;color:#015ad8}.rep-kpis span{font-size:12px;color:#667}
+.rep-bars{display:flex;flex-direction:column;gap:7px}
+.rep-bar{display:grid;grid-template-columns:minmax(80px,32%) 1fr auto;gap:8px;align-items:center;font-size:13px}
+.rep-l{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rep-track{background:#edf2f8;border-radius:6px;height:12px;overflow:hidden}
+.rep-track i{display:block;height:100%;background:linear-gradient(90deg,#0099ff,#015ad8);border-radius:6px}
+.rep-v{font-weight:700;white-space:nowrap}.rep-v small{font-weight:400;color:#778}
+.ro-pal{margin:8px 0}.ro-pal .dz-sw{margin:4px 0}
+.scan3d{height:300px;border-radius:14px;background:#f1f6fc;position:relative;overflow:hidden}
+@media (min-width:760px){.kb-col{flex:1 0 210px}.flt-grid{grid-template-columns:repeat(3,1fr)}.rep-kpis{grid-template-columns:repeat(4,1fr)}}
+.rem-act .btn,.kb-move .btn,.cc-addtag .btn,.small-btn,.ord-row .btn{width:auto;flex:0 0 auto;margin:0}
+.kb-move .btn.primary{flex:1 1 auto}
+.rem-act{flex:1 1 100%}.rem-act .btn.primary{flex:1 1 auto}
+.cc-addtag{flex:1 1 100%;margin-top:2px}.cc-addtag input{flex:1;min-height:0;height:36px;box-sizing:border-box}
+#sheetBody .crm-ord-r .btn{width:auto}
