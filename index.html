@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0099FF">
-<meta name="description" content="Fixifoot Philippines demo – scan your feet and design custom 3D-printed insoles and flip-flops.">
+<meta name="description" content="Fixifoot Philippines – design your own custom 3D-printed insoles and flip-flops, made from a 3D scan of your feet.">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
@@ -12,7 +12,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Fixifoot">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
-<title>Fixifoot Philippines – Custom Fit Demo</title>
+<title>Fixifoot Philippines – Custom Fit</title>
 <link rel="stylesheet" href="styles.css">
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/addons/" } }
@@ -24,7 +24,6 @@
   <header class="topbar" id="topbar">
     <button class="icon-btn" id="backBtn" aria-label="Back">&#8592;</button>
     <div class="brand-mini"><img class="brand-logo" src="assets/logo.png" alt="Fixifoot"></div>
-    <span class="demo-pill">DEMO</span>
     <button class="staff-btn" id="staffBtn" aria-label="Switch to staff view">🛠 Staff view</button>
   </header>
   <div class="mode-banner" id="modeBanner"></div>
@@ -46,7 +45,7 @@
     <div class="bottom-actions">
       <button class="btn primary big" data-go="s-catalog" id="startDesignBtn">Design my pair ✨</button>
       <button class="btn ghost big staff-only" data-go="s-scan" id="scanFirstBtn">Staff: scan first (classic flow)</button>
-      <p class="tiny muted center">Takes about 5 minutes · no account needed</p>
+      <p class="tiny muted center">Takes about 10 minutes · no account needed</p>
       <p class="disclaimer small">Comfort product – not a medical diagnosis. If you have diabetes or ongoing pain, please see a podiatrist or doctor.</p>
     </div>
   </section>
@@ -77,44 +76,39 @@
     <div class="card summary" id="designSummaryCard"></div>
     <div class="card price"><div class="row-between"><span>Price per pair</span><b id="dsPrice">₱–</b></div><p class="tiny muted">Custom-made from your foot scan · all support features included</p></div>
     <div class="card"><b>What happens next</b>
-      <ol class="how small-how"><li><span>1</span>Scan your right foot, then your left (about 1 minute)</li><li><span>2</span>Answer a few quick questions</li><li><span>3</span>We shape your design to your feet</li></ol></div>
+      <ol class="how small-how"><li><span>1</span>Upload a 3D scan of your right foot, then your left (our staff can help)</li><li><span>2</span>Answer a few quick questions</li><li><span>3</span>We shape your design to your feet</li></ol></div>
     <div class="bottom-actions"><button class="btn primary big" id="dsScan">Next: scan my feet 👣</button><button class="btn ghost" data-go="s-design">Change design</button></div>
   </section>
 
-  <!-- 2. SCAN -->
+  <!-- 2. SCAN (v10: real 3D scan upload, right then left; staff fallbacks) -->
   <section class="screen" id="s-scan" data-step="1">
-    <h2>Scan your foot</h2>
+    <h2>Scan your feet</h2>
+    <p class="muted" style="margin-top:-6px">We make your pair from a 3D scan of each foot – <b>right foot first, then left</b>.</p>
     <div class="scan-steps" id="scanSteps"><span data-side="R" class="on">① Right foot</span><span data-side="L">② Left foot</span></div>
-    <div class="cam-wrap" id="camWrap">
-      <video id="camVideo" playsinline muted autoplay></video>
-      <div class="cam-fallback" id="camFallback">
-        <div class="paper"><div class="foot-guide-fill"></div></div>
-        <p id="camMsg">Camera preview appears here</p>
-      </div>
-      <div class="cam-overlay">
-        <span class="demo-badge">Demo scan</span>
-        <svg class="foot-guide" viewBox="0 0 100 200" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-          <rect x="6" y="4" width="88" height="192" rx="6" fill="none" stroke="#fff" stroke-dasharray="4 3" stroke-width="1.4" opacity=".8"/>
-          <path id="footPath" d="M50 18c14 0 22 12 22 30 0 14-6 22-6 40 0 18 8 30 8 52 0 24-12 44-25 44S26 170 28 146c2-22 4-34-2-54-5-16-10-32-6-48 3-16 14-26 30-26z" fill="rgba(255,255,255,.12)" stroke="#fff" stroke-width="1.6"/>
-        </svg>
-        <div class="scan-transition hidden" id="scanTransition"><div class="big-emoji">👏</div><b>Great!</b><span>Now your <u id="trSide">left</u> foot</span></div>
-        <div class="ring-wrap" id="ringWrap">
-          <svg viewBox="0 0 120 120" class="ring"><circle cx="60" cy="60" r="52" class="ring-bg"/><circle cx="60" cy="60" r="52" class="ring-fg" id="ringFg"/></svg>
-          <div class="ring-label"><b id="ringPct">0%</b><span id="ringPhase">Ready</span></div>
-        </div>
-      </div>
-    </div>
-    <p class="hint" id="scanHint">Place the foot on a sheet of A4 paper. Hold the phone 30–40 cm away and slowly move it around the foot.</p>
+    <div class="scan-feet" id="scanFeet"></div>
     <div class="bottom-actions">
-      <button class="btn primary big" id="scanBtn">Start demo scan</button>
-      <label class="btn ghost big file-btn">Upload scan file (STL / OBJ)<input type="file" id="fileInput" accept=".stl,.obj"></label>
-      <button class="btn link" id="skipCamBtn">No camera? Run simulated scan</button>
+      <label class="btn primary big file-btn" id="uploadLbl"><span id="uploadTxt">Upload right foot scan</span><input type="file" id="fileInput" accept=".stl,.obj,.ply,model/stl,model/obj,application/octet-stream"></label>
+      <p class="tiny muted center">STL, OBJ or PLY file · up to about 100 MB</p>
+    </div>
+    <details class="card scan-how" id="scanHow" open><summary><b>How to scan with your phone</b></summary>
+      <ol class="how small-how">
+        <li><span>1</span><div>Open <b>KIRI Engine</b> (free) or another 3D-scan app and choose <i>Object / Photo scan</i>.</div></li>
+        <li><span>2</span><div>Sit down and rest your bare foot flat on a plain floor or a sheet of A4 paper. Roll your trousers up above the ankle.</div></li>
+        <li><span>3</span><div>Slowly walk the phone around the foot at 30–40 cm (2–3 rounds: low, middle, high). Keep the foot still.</div></li>
+        <li><span>4</span><div>Export the model as <b>STL, OBJ or PLY</b> and upload it here. Then do the same for your left foot.</div></li>
+      </ol>
+      <p class="tiny muted">Ask our staff – we are happy to scan your feet for you in the shop.</p>
+    </details>
+    <div class="card staff-only scan-staff"><h3>🛠 Staff options</h3>
+      <button class="btn ghost big" id="manualBtn">📏 Manual measurements (no 3D scan)</button>
+      <p class="tiny muted">Fallback when no scan is possible: enter foot length, width and arch type for each foot. The insole is then built from these measurements (no total-contact fit) and is marked “manual measurements” on the order.</p>
+      <button class="btn ghost big staff-test hidden" id="sampleFeetBtn">🧪 Test with sample feet</button>
     </div>
   </section>
 
   <!-- 3. FOOT PREVIEW -->
   <section class="screen" id="s-preview" data-step="2">
-    <div class="row-between"><h2>Your 3D foot</h2><span class="tag" id="previewSource">Demo model</span></div>
+    <div class="row-between"><h2 id="previewTitle">Your 3D feet</h2><span class="tag" id="previewSource">–</span></div>
     <div class="viewer tall" id="footViewer"><div class="viewer-hint">Drag any direction to turn 360° · pinch / scroll to zoom</div></div>
     <div class="view-ctrl">
       <div class="seg small" id="pvSide"><button class="seg-btn" data-v="R">Right</button><button class="seg-btn" data-v="L">Left</button><button class="seg-btn active" data-v="both">Both</button></div>
@@ -142,7 +136,7 @@
         <div class="metric"><b id="mSize">–</b><span>Size</span></div>
       </div>
       <canvas id="footprintCanvas" width="300" height="420"></canvas>
-      <p class="tiny muted staff-only" id="metricSource">Demo values (simulated scan).</p>
+      <p class="tiny muted staff-only" id="metricSource"></p>
     </div>
     <div class="card result-card">
       <div class="arch-scale" id="archScale">
@@ -230,13 +224,19 @@
   <section class="screen" id="s-order" data-step="7">
     <h2>Order summary</h2>
     <div class="card summary" id="summaryCard"></div>
-    <div class="card"><h3>Your details</h3><label class="field">Name<input id="custName" autocomplete="name" placeholder="Full name"></label><label class="field">Mobile<input id="custPhone" inputmode="tel" autocomplete="tel" placeholder="09xx xxx xxxx"></label><p class="tiny muted">Saved on this device only (demo) so we can re-print without a new scan.</p></div>
+    <div class="card"><h3>Your details</h3><label class="field">Name<input id="custName" autocomplete="name" placeholder="Full name"></label><label class="field">Mobile<input id="custPhone" inputmode="tel" autocomplete="tel" placeholder="09xx xxx xxxx"></label><label class="field">Email <small class="muted">(optional – for your receipt)</small><input id="custEmail" type="email" inputmode="email" autocomplete="email" placeholder="name@example.com"></label><p class="tiny muted">We keep your scan and design on file so we can re-make your pair without a new scan.</p></div>
     <div class="card price">
-      <div class="row-between"><span>Price <span class="tag warn" id="priceTag">example only</span></span><b id="priceTotal">₱–</b></div>
+      <div class="row-between"><span>Price <span class="tag warn hidden" id="priceTag">estimate</span></span><b id="priceTotal">₱–</b></div>
       <div id="priceLines" class="tiny muted"></div>
     </div>
+    <div class="card staff-only" id="payCard"><h3>💳 Payment (staff)</h3>
+      <label class="field">Payment method<select id="payMethod"><option value="">Not yet paid / choose later</option></select></label>
+      <label class="switch"><input type="checkbox" id="payPaid"> Paid</label>
+      <label class="field">Discount (₱, optional)<input id="payDiscount" type="number" min="0" step="1" inputmode="numeric" placeholder="0"></label>
+      <label class="field">Notes (on the receipt)<input id="payNotes" maxlength="200" placeholder="e.g. ready for fitting in 7 days"></label>
+    </div>
     <div class="bottom-actions">
-      <button class="btn primary big" id="orderBtn">Order my pair (demo)</button>
+      <button class="btn primary big" id="orderBtn">Place my order</button>
       <div class="staff-only"><button class="btn ghost big" id="sendBtn">Staff: send to production</button>
       <p class="tiny muted center">Downloads the production spec (JSON) and a print-ready STL per foot (mm, watertight, flat bottom on Z=0).</p></div>
       <button class="btn ghost" id="restartBtn">New customer</button>
@@ -245,9 +245,9 @@
 
   <!-- STAFF DASHBOARD -->
   <section class="screen" id="s-staff" data-step="7">
-    <div class="row-between"><h2>Staff dashboard</h2><span class="tag" id="staffOrderTag">Demo</span></div>
+    <div class="row-between"><h2>Staff dashboard</h2><span class="tag" id="staffOrderTag">–</span></div>
     <div class="staff-top"><button class="btn ghost" id="crmBtn">📇 Customers</button><button class="btn ghost" id="crmSaveBtn">💾 Save customer</button><button class="btn ghost" id="crmNewBtn">＋ New scan</button></div>
-    <div id="staffEmpty" class="card hidden"><b>No customer yet.</b><p class="muted">Scan a customer first, or load a demo customer to explore the staff tools.</p><button class="btn primary big" id="loadDemoBtn">Load demo customer</button></div>
+    <div id="staffEmpty" class="card hidden"><b>No customer yet.</b><p class="muted">Start with a new scan, or open a saved customer.</p><button class="btn primary big" id="emptyScanBtn">＋ New scan</button><button class="btn ghost big staff-test hidden" id="loadDemoBtn">🧪 Test with sample feet</button></div>
     <div id="staffBody">
       <div class="staff-grid">
         <div class="staff-col">
@@ -297,6 +297,21 @@
           <div class="card"><h3>🩺 Clinical rationale</h3><p class="tiny muted">Why each change is in this insole – in plain words, with the guideline it follows.</p><div id="staffRationale"></div></div>
           <div id="staffConflicts"></div>
         </div>
+      </div>
+    </div>
+    <div class="staff-settings">
+      <div class="card" id="settingsCard"><h3>⚙️ Settings</h3>
+        <details><summary class="tiny"><b>Business details for receipts</b> <span class="muted" id="bizState"></span></summary>
+          <p class="tiny muted">Leave blank if not registered. Without name, address and TIN the PDF is titled “Acknowledgement Receipt” (not an official BIR receipt). Saved on this device; <code>window.FIXI_BUSINESS</code> in config.js sets it for every device.</p>
+          <label class="field">Business name<input id="bizName" placeholder="e.g. Fixifoot Philippines"></label>
+          <label class="field">Address<input id="bizAddress" placeholder="Street, city"></label>
+          <label class="field">TIN<input id="bizTin" placeholder="000-000-000-000"></label>
+          <label class="field">Phone<input id="bizPhone" inputmode="tel"></label>
+          <label class="field">Email<input id="bizEmail" type="email"></label>
+          <button class="btn ghost" id="bizSave">Save business details</button></details>
+        <label class="field">Staff name on receipts<input id="staffNameIn" placeholder="Your name"></label>
+        <label class="switch"><input type="checkbox" id="testModeChk"> Test tools: “Test with sample feet” (staff only)</label>
+        <p class="tiny muted" id="offlineNote"></p>
       </div>
     </div>
   </section>
@@ -358,7 +373,7 @@
     <div class="bottom-actions"><button class="btn ghost" data-go="s-staff">← Back to dashboard</button></div>
   </section>
 
-  <div class="thanks hidden" id="thanks"><div class="thanks-card"><div class="confetti" id="confetti"></div><div class="big-emoji">🎉</div><h2>Thank you!</h2><p>Your custom pair is on its way to our print room. We'll message you when it's ready for fitting.</p><p class="tiny muted">Demo only – no real order was placed.</p><button class="btn primary big" id="thanksDone">Done</button></div></div>
+  <div class="thanks hidden" id="thanks"><div class="thanks-card"><div class="confetti" id="confetti"></div><div class="big-emoji">🎉</div><h2>Thank you!</h2><p>Your custom pair is on its way to our print room. We'll message you when it's ready for fitting.</p><p class="tiny muted" id="thanksNo"></p><div class="rc-btns" id="thanksReceipt"><button class="btn ghost" data-rc="download">🧾 Download receipt (PDF)</button><button class="btn ghost" data-rc="share">↗ Share</button><button class="btn ghost" data-rc="print">🖨 Print</button></div><button class="btn primary big" id="thanksDone">Done</button></div></div>
   <div class="toast" id="toast"></div>
   <div class="sheet hidden" id="sheet"><div class="sheet-inner"><button class="icon-btn sheet-close" id="sheetClose">✕</button><div id="sheetBody"></div></div></div>
 </div>

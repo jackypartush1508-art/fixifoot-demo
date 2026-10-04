@@ -328,3 +328,19 @@ body.staff .mode-banner button.primary{background:#5cc2ff;color:#082a4f}
 .price-edit{display:grid;gap:6px;margin:6px 0}
 .price-row{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px}
 .price-row input{width:110px;font-size:15px;padding:6px 8px;border-radius:10px;border:1px solid #cfd9e3;text-align:right}
+
+/* v10: scan upload step, staff fallbacks, receipt */
+.scan-feet{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0 4px}
+.sf{display:flex;gap:10px;align-items:center;background:#fff;border:2px solid #e2e9f1;border-radius:16px;padding:12px}
+.sf b{display:block;font-size:15px}.sf small{display:block;color:#6b7a86;font-size:12px;line-height:1.3;word-break:break-word}
+.sf-ic{flex:0 0 34px;height:34px;border-radius:50%;display:grid;place-items:center;background:#eef5fc;color:#0a6fc2;font-weight:700}
+.sf.cur{border-color:#0099ff;box-shadow:0 0 0 4px rgba(0,153,255,.12)}.sf.done{border-color:#27ae60}.sf.done .sf-ic{background:#27ae60;color:#fff}
+.scan-how summary{cursor:pointer;list-style:none}.scan-how summary::-webkit-details-marker{display:none}.scan-how summary::after{content:' ▾';color:#6b7a86}
+.scan-how .small-how li{align-items:flex-start;line-height:1.4}
+.scan-staff .btn{margin-top:6px}
+.mm-foot{border:1px solid #e2e9f1;border-radius:14px;padding:10px 12px;margin:10px 0}
+.rc-btns{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}.rc-btns .btn{flex:1 1 30%;min-width:96px;padding:12px 8px;font-size:14px}
+.crm-ord-r{display:flex;flex-direction:column;align-items:flex-end;gap:4px}.crm-ord-r .rc-open{padding:6px 10px;font-size:12px;min-height:0}
+.rc-total{font-size:17px;margin:10px 0}
+.staff-settings{margin-top:14px}
+.thanks-card .rc-btns .btn{font-size:13px}
