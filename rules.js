@@ -476,9 +476,71 @@
     { id: 'slide', name: 'Lattice slide sandal', kind: 'slide', image: 'assets/slide-lattice.jpg',
       desc: '3D-printed honeycomb mesh slide. Light, airy, washable.', colors: ['#f4f6f6', '#f26b1d', '#1f2a30', '#1aa7d8'], examplePrice: 3490 },
     { id: 'fullcontact', name: 'Full-contact TPU insole', kind: 'insole', image: 'assets/insole-fullcontact.jpg',
-      desc: 'Full-length TPU insole with sculpted arch support.', colors: ['#c8784a', '#d9a066', '#1f2a30', '#0099ff'], examplePrice: 2790 }
+      desc: 'Full-length TPU insole with sculpted arch support.', colors: ['#c8784a', '#d9a066', '#1f2a30', '#0099ff'], examplePrice: 2790 },
+    /* v7 insole line – every model is built on the smooth-toe (v6.1) scan surface. `model` = real geometry differences (used by fit.js /
+       geometry.js for preview + STL); `params` = forced clinical settings; `print` = TPU print settings (spec JSON + staff mode). */
+    { id: 'sport', name: 'Fixifoot Sport', kind: 'insole', line: 'v7', image: 'catalog/sport.png', tagline: 'Bounce back with every step',
+      desc: 'Springy 7 mm insole for running, gym and court sports. Energy-return core, soft top, extra shock absorption under the heel.',
+      colors: ['#0099ff', '#015ad8', '#1f2a30', '#ffd22e'], examplePrice: 3290,
+      model: { heelT: 8, foreT: 6, length: 'full', archBoost: 1.5, openings: null, recesses: [], rim: 0.6, summary: '8 mm heel → 6 mm forefoot, deep 18 mm heel cup, medium arch (+1.5 mm)' },
+      params: { heelCupDepth: 18, shockAbsorb: true, dualDensity: true, heelCushion: true, shore: '95A', infill: 'gyroid 20% (heel 35%)', topCover: 1.2 },
+      print: { base: 'TPU 95A', top: 'TPU 85A soft top layer, 1.2 mm (dual-material or pause-and-swap)', pattern: 'gyroid', infill: '20%', walls: 3, topLayers: 5, bottomLayers: 4, layer: '0.2 mm',
+        zones: [{ zone: 'Heel shock zone (rear 30%)', infill: 'gyroid 35%', why: 'denser = more shock absorption at heel strike' }, { zone: 'Forefoot', infill: 'gyroid 20%', why: 'energy return at toe-off' }],
+        nozzleC: '225-235', bedC: '50', speed: '30-40 mm/s', notes: 'Gyroid core gives springy energy return. Print heel-down, no supports.' } },
+    { id: 'everyday', name: 'Fixifoot Everyday', kind: 'insole', line: 'v7', image: 'catalog/everyday.png', tagline: 'All-day comfort in your regular shoes',
+      desc: 'Slim 3–4 mm full-contact insole that fits regular shoes. Gentle heel cup and breathing holes.',
+      colors: ['#f4f6f6', '#0099ff', '#cfd8dc', '#1f2a30'], examplePrice: 2490,
+      model: { heelT: 4, foreT: 3, length: 'full', archBoost: 0, openings: 'holes', recesses: [], rim: 0.5, summary: '4 mm heel → 3 mm forefoot, gentle 10 mm heel cup, full-contact arch, ventilation holes' },
+      params: { heelCupDepth: 10, fullContact: true, shore: '90A', infill: 'gyroid 25%', topCover: 0.8 },
+      print: { base: 'TPU 90A', top: 'none (optional 0.8 mm fabric top cover)', pattern: 'gyroid', infill: '25%', walls: 3, topLayers: 4, bottomLayers: 3, layer: '0.16 mm',
+        zones: [{ zone: 'Around holes', infill: 'solid walls (3 perimeters)', why: 'clean, strong hole edges' }],
+        nozzleC: '220-230', bedC: '50', speed: '30 mm/s', notes: 'Thin part: print slow, 0.16 mm layers for a smooth top.' } },
+    { id: 'diabetic', name: 'Fixifoot Diabetic Care', kind: 'insole', line: 'v7', image: 'catalog/diabetic.png', tagline: 'Extra-soft protection for sensitive feet',
+      desc: 'Very soft 6–7 mm total-contact insole. Spreads pressure evenly, rounded edges, extra-soft zones under the ball of the foot and big toe.',
+      colors: ['#e8f4ff', '#cfd8dc', '#0099ff', '#1f2a30'], examplePrice: 3490,
+      model: { heelT: 7, foreT: 6.2, length: 'full', archBoost: 0, openings: null, rim: 1.4,
+        recesses: [{ id: 'metHeads', label: 'Extra-soft pocket – metatarsal heads', at: 'met', depth: 1.5 }, { id: 'hallux', label: 'Extra-soft pocket – hallux', at: 'hallux', depth: 1.5 }],
+        summary: '7 mm heel → 6.2 mm forefoot, total contact, rounded 1.4 mm edges, 1.5 mm soft-insert pockets under met heads + hallux' },
+      params: { noHardEdges: true, fullContact: true, minThick: 6, shore: '80-85A', infill: 'gyroid 15%', topCover: 3, heelCupDepth: 14 },
+      print: { base: 'varioShore TPU (foamed, ~80A at 240 °C) or TPU 80-85A', top: '3 mm soft top cover (PORON / plastazote) – recommended', pattern: 'gyroid', infill: '15%', walls: 2, topLayers: 4, bottomLayers: 3, layer: '0.2 mm',
+        zones: [{ zone: 'Met-head + hallux pockets', infill: 'gyroid 8% or fill with 1.5 mm PORON insert', why: 'extra-soft offloading of high-pressure spots' }],
+        nozzleC: 'varioShore 230-250 (hotter = softer) / TPU 85A 220-230', bedC: '40-50', speed: '20-25 mm/s', notes: 'Diabetes: check the feet daily; podiatrist review before and after fitting.' } },
+    { id: 'work', name: 'Fixifoot Work & Stand', kind: 'insole', line: 'v7', image: 'catalog/work.png', tagline: 'Made for long shifts on your feet',
+      desc: '5 mm insole with maximum cushioning under heel and ball, plus strong arch support for long hours standing.',
+      colors: ['#1f2a30', '#015ad8', '#ffd22e', '#cfd8dc'], examplePrice: 2990,
+      model: { heelT: 5.5, foreT: 5, length: 'full', archBoost: 3, openings: null, recesses: [], rim: 0.7, summary: '5.5 mm heel → 5 mm forefoot, strong arch (+3 mm), 16 mm heel cup' },
+      params: { heelCupDepth: 16, heelCushion: true, shockAbsorb: true, dualDensity: true, shore: '92A', infill: 'gyroid 20% (heel + ball 12%)', topCover: 1.5 },
+      print: { base: 'TPU 92A', top: 'TPU 85A, 1 mm', pattern: 'gyroid', infill: '20%', walls: 3, topLayers: 5, bottomLayers: 4, layer: '0.2 mm',
+        zones: [{ zone: 'Heel + ball cushion zones', infill: 'gyroid 12%', why: 'softer = max cushioning where pressure peaks' }, { zone: 'Arch', infill: 'gyroid 35%', why: 'firm arch support' }],
+        nozzleC: '225-235', bedC: '50', speed: '30 mm/s', notes: 'Strong arch: keep 3 walls in the midfoot.' } },
+    { id: 'dress', name: 'Fixifoot Dress Slim', kind: 'insole', line: 'v7', image: 'catalog/dress.png', tagline: 'Invisible support for dress shoes & heels',
+      desc: 'Ultra-slim 2–3 mm, 3/4-length insole with a ball-of-foot pad. Fits dress shoes, flats and heels.',
+      colors: ['#d9a066', '#1f2a30', '#f4f6f6', '#c8784a'], examplePrice: 2690,
+      model: { heelT: 3, foreT: 2.2, length: '3/4', frontMm: 6, archBoost: 0, openings: null, recesses: [], rim: 0.4, summary: '3/4 length (ends ~6 mm past the met-head line), 3 mm heel → 2.2 mm front with skived edge, met pad, 10 mm heel cup' },
+      params: { metPad: 'central', heelCupDepth: 10, shore: '95A', infill: '100% (solid)', topCover: 0.5 },
+      print: { base: 'TPU 95A', top: 'thin leather / microfibre top cover', pattern: 'concentric (solid)', infill: '100%', walls: 2, topLayers: 3, bottomLayers: 3, layer: '0.12 mm',
+        zones: [{ zone: 'Met pad', infill: 'solid', why: 'keeps the pad shape inside narrow shoes' }],
+        nozzleC: '220-230', bedC: '50', speed: '25 mm/s', notes: 'Very thin: print solid, 0.12 mm layers, brim recommended.' } },
+    { id: 'kids', name: 'Fixifoot Kids', kind: 'insole', line: 'v7', image: 'catalog/kids.png', tagline: 'Gentle support for growing feet',
+      desc: 'Flexible, soft insole with a gentle arch and a stable heel cup. Scales with smaller sizes.',
+      colors: ['#ffd22e', '#0099ff', '#5cc2ff', '#f26b1d'], examplePrice: 1990,
+      model: { heelT: 3.2, foreT: 2.2, length: 'full', archBoost: 0, archFill: 75, openings: null, recesses: [], rim: 0.9, scaleWithSize: true, summary: '3.2 mm heel → 2.2 mm flexible forefoot, gentle arch (75% fill), stable 14 mm heel cup; thickness + cup scale with foot length (ref 240 mm)' },
+      params: { heelCupDepth: 14, noHardEdges: true, shore: '85A', infill: 'gyroid 15%', topCover: 1 },
+      print: { base: 'TPU 85A (flexible)', top: 'none / soft fabric', pattern: 'gyroid', infill: '15%', walls: 2, topLayers: 4, bottomLayers: 3, layer: '0.16 mm',
+        zones: [{ zone: 'Heel cup wall', infill: '3 walls', why: 'stable heel cup' }, { zone: 'Forefoot', infill: 'gyroid 10%', why: 'flexes with the foot' }],
+        nozzleC: '220-230', bedC: '45', speed: '20-25 mm/s', notes: 'Re-scan every 6-9 months (growing feet).' } }
   ];
+  // v7: which model fits this customer best (shown as "Recommended for you" in the model picker)
+  function recommendProduct(conditions = [], answers = {}, footLengthMm = null) {
+    const c = new Set(conditions);
+    if (c.has('diabetic') || answers.diabetes === 'yes') return { id: 'diabetic', why: 'Diabetes care: extra-soft total contact, no hard edges' };
+    if (footLengthMm && footLengthMm < 215) return { id: 'kids', why: 'Small foot (kids size): flexible, gentle support' };
+    if (c.has('athlete') || answers.activity === 'athlete') return { id: 'sport', why: 'Sporty: energy return + heel shock absorption' };
+    if (c.has('standing_worker') || answers.standing === '8+') return { id: 'work', why: 'On your feet all day: max cushioning + strong arch' };
+    if (c.has('metatarsalgia') || c.has('mortons_neuroma')) return { id: 'everyday', why: 'Ball-of-foot comfort in your regular shoes' };
+    return { id: 'everyday', why: 'Slim, all-day comfort for regular shoes' };
+  }
   const ADDON_EXAMPLE_PRICE = 150; // per advanced modification (example only)
 
-  global.FixiRules = { rationale, REFS, FRIENDLY, ARCH_FRIENDLY, ARCH_FRIENDLY_TEXT, QUESTIONS, conditionsFromQA, benefits, ARCH_TYPES, ZONES, CONDITIONS, PRODUCTS, ADDON_EXAMPLE_PRICE, SHORE_ORDER, combine, autoConditionsFromAnswers, suggestFromScan };
+  global.FixiRules = { rationale, REFS, FRIENDLY, ARCH_FRIENDLY, ARCH_FRIENDLY_TEXT, QUESTIONS, conditionsFromQA, benefits, ARCH_TYPES, ZONES, CONDITIONS, PRODUCTS, recommendProduct, ADDON_EXAMPLE_PRICE, SHORE_ORDER, combine, autoConditionsFromAnswers, suggestFromScan };
 })(window);

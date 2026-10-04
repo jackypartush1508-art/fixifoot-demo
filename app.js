@@ -407,10 +407,13 @@ $('#lldMm').oninput = e => { state.answers.lldMm = +e.target.value; $('#lldVal')
 $('#lldSide').onchange = e => { state.answers.lldSide = e.target.value; };
 
 /* ---------------- products ---------------- */
+// v7: rule engine picks the best model for this customer (diabetes -> Diabetic Care, 8+ h standing -> Work, sporty -> Sport, small foot -> Kids)
+function recommendNow() { const f = longestFoot(); return R.recommendProduct([...state.conditions], state.answers, f ? f.length : null); }
 function renderProducts() {
-  const f = longestFoot(), sz = f ? sizeFromLength(f.length) : null;
-  $('#productList').innerHTML = R.PRODUCTS.map(p => `<div class="product ${state.product?.id === p.id ? 'on' : ''}" data-id="${p.id}">
-    <img src="${p.image}" alt="${p.name}" loading="lazy"><div class="p-body"><b>${p.name}</b><p>${p.desc}</p>
+  const f = longestFoot(), sz = f ? sizeFromLength(f.length) : null, rec = recommendNow();
+  const list = [...R.PRODUCTS.filter(p => p.id === rec.id), ...R.PRODUCTS.filter(p => p.id !== rec.id && p.line === 'v7'), ...R.PRODUCTS.filter(p => p.id !== rec.id && p.line !== 'v7')];
+  $('#productList').innerHTML = list.map(p => `<div class="product ${state.product?.id === p.id ? 'on' : ''} ${p.id === rec.id ? 'rec' : ''}" data-id="${p.id}">
+    <img src="${p.image}" alt="${p.name}" loading="lazy"><div class="p-body">${p.id === rec.id ? `<span class="rec-badge">⭐ Recommended for you</span>` : ''}<b>${p.name}</b>${p.tagline ? `<small class="p-tag">${p.tagline}</small>` : ''}<p>${p.desc}</p>${p.id === rec.id ? `<p class="tiny rec-why">${rec.why}</p>` : ''}
     <div class="p-meta"><div class="swatches">${p.colors.map(c => `<span class="sw" style="background:${c}"></span>`).join('')}</div><span class="tag">${sz ? 'Size EU ' + sz.eu + ' (from scan)' : ''}</span></div></div></div>`).join('');
   $$('#productList .product').forEach(el => el.onclick = () => {
     const p = R.PRODUCTS.find(x => x.id === el.dataset.id);
@@ -443,6 +446,18 @@ function currentSpec(side = state.side) {
   const ans = { ...state.answers };
   if (state.conditions.has('leg_length') && ans.lldSide && ans.lldSide[0].toUpperCase() !== side) ans.lldMm = 0; // lift only on the shorter leg
   const res = R.combine(archOf(side), [...state.conditions], ans);
+  const pr = state.product;
+  if (pr?.model) { // v7 insole line: the chosen model sets its own clinical params (thickness profile, cup, edges, pads, material)
+    const keep = { metPad: res.params.metPad };
+    Object.assign(res.params, pr.params || {});
+    if (keep.metPad && !pr.params?.metPad) res.params.metPad = keep.metPad; // prescribed met pad is kept
+    if (pr.model.archFill) res.params.archFill = pr.model.archFill;
+    const fl = state.feet[side]?.length;
+    if (pr.model.scaleWithSize && fl) res.params.heelCupDepth = Math.round(res.params.heelCupDepth * Math.min(1, Math.max(.75, fl / 240)));
+    res.params.model = pr.id;
+    if ((res.params.referClinician || state.conditions.has('diabetic')) && pr.id !== 'diabetic') res.conflicts.push(`Diabetes: "${pr.name}" uses TPU ${res.params.shore} – the Fixifoot Diabetic Care model (extra soft, no hard edges, offload pockets) is recommended.`);
+    res.notes.push(`Model ${pr.name}: ${pr.model.summary}. Smooth toe area (v6.1), no ridges between the toes.`);
+  }
   if (state.archFill != null) res.params.archFill = state.archFill;
   const md = scanModel(side);
   if (md) { res.totalContact = true; res.scanArchH = md.archH; res.notes.unshift(`Total contact: top surface = scanned plantar surface (2 mm grid, heel → toe sulcus), arch filled ${res.params.archFill ?? 100}%; clinical modifications added on top.`); }
@@ -463,12 +478,13 @@ function footModel(side) {
 }
 const scanModel = side => (state.totalContact ? footModel(side) : null);
 function lastLenFor(kind) { if (state.sizeMode === 'scan') return null; const a = ALLOW[kind] || ALLOW.insole; return lengthFromEU(+state.sizeMode) + a.heel + a.toe; }
+const tplKind = p => p.kind === 'insole' && !p.model; // v7 line models are always built from the scan / parametric surface (no template)
 const thickFor = p => (p.id === 'perforated' ? 2.2 : p.id === 'fullcontact' ? 3.6 : undefined);
 // one place that builds the product for display (zones) or for printing / fit check
-const openingMode = p => p?.id === 'perforated' ? 'holes' : p?.id === 'slide' ? 'lattice' : null;
+const openingMode = p => p?.id === 'perforated' || p?.model?.openings === 'holes' ? 'holes' : p?.id === 'slide' ? 'lattice' : null;
 function openingsFor(p) { const m = openingMode(p); return m && state.openings.on ? { mode: m, density: state.openings.density, ...(m === 'holes' ? { d: state.openings.d || 3.5 } : {}) } : null; }
 function productObject(side, spec, { display = true, zonesOn = state.showZones, openings = display } = {}) {
-  const p = ensureProduct(), md = scanModel(side), useTpl = state.base && p.kind === 'insole' && templateCache[state.base];
+  const p = ensureProduct(), md = scanModel(side), useTpl = state.base && tplKind(p) && templateCache[state.base];
   const op = openings ? openingsFor(p) : null;
   const integ = p.kind === 'insole' || state.integrate;
   const z = { zones: display ? spec.zones : [], showZones: display && zonesOn, highlight: display ? state.highlight : null };
@@ -480,7 +496,7 @@ function productObject(side, spec, { display = true, zonesOn = state.showZones, 
   }
   if (md && integ) {
     const lastLen = lastLenFor(p.kind);
-    if (!display) { const s = buildContactSole(md, { params: { ...spec.params, _thick: thickFor(p) }, kind: p.kind, zones: [], showZones: false, color: state.color, lastLen, openings: op }); return s; }
+    if (!display) { const s = buildContactSole(md, { params: { ...spec.params, _thick: thickFor(p), ...(p.model ? { _model: p.model } : {}) }, kind: p.kind, zones: [], showZones: false, color: state.color, lastLen, openings: op }); return s; }
     return buildProduct(p, { L: 0, W: 0, params: spec.params, side, ...z, color: state.color, strapColor: state.strapColor, integrate: true, openings: op, soleFn: o => buildContactSole(md, { ...o, lastLen }) });
   }
   const d = productDims(side);
@@ -495,7 +511,7 @@ function fitFor(side) {
   if (fitCache[side]?.key === key) return fitCache[side].v;
   const obj = productObject(side, spec, { display: false, openings: false });
   const geo = obj.isMesh ? obj.geometry : null; let v = null;
-  if (geo) { try { v = { md, spec, geo, fit: fitCheck(md, geo, spec.params), scanBased: !!scanModel(side) }; } catch (e) { console.warn('fit', e); } }
+  if (geo) { try { v = { md, spec, geo, fit: fitCheck(md, geo, state.product?.model ? { ...spec.params, _model: state.product.model } : spec.params), scanBased: !!scanModel(side) }; } catch (e) { console.warn('fit', e); } }
   fitCache[side] = { key, v }; return v;
 }
 function renderResult(keepView = true) {
@@ -511,10 +527,10 @@ function renderResult(keepView = true) {
   $('#archOverride2').value = archOf(f.side);
   $('#integrateWrap').classList.toggle('hidden', p.kind === 'insole');
   productViewer ||= new Viewer($('#productViewer'));
-  const useTpl = state.base && p.kind === 'insole' && templateCache[state.base];
-  $('#templateSel').disabled = p.kind !== 'insole';
+  const useTpl = state.base && tplKind(p) && templateCache[state.base];
+  $('#templateSel').disabled = !tplKind(p);
   const obj = productObject(f.side, spec);
-  productViewer.set(obj, keepView && !!productViewer.obj); $('#templateSel').value = p.kind === 'insole' ? state.base : '';
+  productViewer.set(obj, keepView && !!productViewer.obj); $('#templateSel').value = tplKind(p) ? state.base : '';
   // colours
   $('#colorRow').innerHTML = 'Colour ' + p.colors.map(c => `<span class="sw ${c === state.color ? 'on' : ''}" data-c="${c}" style="background:${c}"></span>`).join('');
   $$('#colorRow .sw').forEach(s => s.onclick = () => { state.color = s.dataset.c; renderResult(); });
@@ -581,7 +597,7 @@ const newOrderId = () => 'FXF-' + Date.now().toString(36).toUpperCase();
 function ensureProduct() { if (!state.product) { state.product = R.PRODUCTS.find(x => x.id === 'fullcontact'); state.color = state.product.colors[0]; } return state.product; }
 function buildStl(side, id) {
   const p = ensureProduct(), sp = currentSpec(side), md = scanModel(side);
-  const useTpl = !!(state.base && p.kind === 'insole' && templateCache[state.base]);
+  const useTpl = !!(state.base && tplKind(p) && templateCache[state.base]);
   const name = `${id}-${p.id}-${p.kind === 'insole' ? 'insole' : 'sole'}-${sideName(side).toLowerCase()}.stl`;
   if (md && (useTpl || p.kind === 'insole' || state.integrate)) {
     // scan-accurate path: total-contact sole / morphed template, converted to Z-up, Z=0, outward normals
@@ -608,13 +624,15 @@ function buildSpec(id, stlInfos = []) {
   const p = ensureProduct(), feet = Object.keys(state.feet);
   const perFoot = feet.map(s => { const sp = currentSpec(s); return { side: sideName(s), scan: { ...state.feet[s], map: state.feet[s].map ? `${state.feet[s].map.nx}×${state.feet[s].map.nz} plantar height map @ ${state.feet[s].map.res} mm (stored)` : null, plantar: undefined }, totalContact: !!sp.totalContact, archType: sp.archType, params: sp.params, clinicalRationale: R.rationale(sp, { totalContact: sp.totalContact, scanArchH: sp.scanArchH }).map(r => ({ title: r.title, value: r.value, why: r.why, sources: r.refs.map(x => x.url) })), zones: sp.zones.map(z => ({ id: z.id, label: z.label, reasons: z.reasons })), notes: sp.notes, conflicts: sp.conflicts }; });
   const spec = currentSpec(), lines = priceLines(spec);
-  return { orderId: id, demo: true, brand: 'Fixifoot Philippines', createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && p.kind === 'insole') ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
+  return { orderId: id, demo: true, brand: 'Fixifoot Philippines', createdAt: new Date().toISOString(), product: { id: p.id, name: p.name, color: state.color, strapColor: state.strapColor || null, footbedIntegrated: p.kind === 'insole' || state.integrate, base: state.base || 'parametric', openings: openingsFor(p) && !(state.base && tplKind(p)) ? { ...OPENING_PRESETS[openingsFor(p).mode][state.openings.density], ...openingsFor(p) } : null },
     size: sizeFromLength(longestFoot().length), questionnaire: state.answers, questionnaireRaw: state.qa, conditions: spec.conditions, feet: perFoot,
     examplePrice: { currency: 'PHP', lines, total: lines.reduce((s, l) => s + l[1], 0), note: 'example only' },
-    print: { material: 'TPU ' + spec.params.shore, infill: spec.params.infill, walls: 3, nozzleTempC: '220-235', printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' },
+    print: p.print ? { model: p.name, ...p.print, printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' } : { material: 'TPU ' + spec.params.shore, infill: spec.params.infill, walls: 3, nozzleTempC: '220-235', printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Demo spec – verify in slicer' },
+    model: p.model ? { id: p.id, name: p.name, tagline: p.tagline, geometry: { ...p.model, recesses: (p.model.recesses || []).map(r => ({ ...r })) }, forcedParams: p.params, smoothToes: true } : null,
+    recommended: recommendNow(),
     stlFiles: stlInfos,
     stlNotes: [p.kind === 'flipflop' ? 'STL = sole/footbed only. Strap and toe post are separate parts.' : p.kind === 'slide' ? 'STL = sole/footbed only. Lattice upper is a separate part.' : 'STL = full insole solid.',
-      openingMode(p) && openingsFor(p) && !(state.base && p.kind === 'insole') ? (p.id === 'perforated' ? `Ventilation holes are REAL through-holes in the STL (Ø ${state.openings.d || 3.5} mm, ${OPENING_PRESETS.holes[state.openings.density].label}); heel cup, arch support and edge margin kept solid.` : `Lattice openings are REAL through-openings in the sole STL (${OPENING_PRESETS.lattice[state.openings.density].label}); solid rim and strap-anchor areas.`) : openingMode(p) ? (state.base && p.kind === 'insole' ? 'Template base selected: ventilation holes are not cut into template models – use the parametric / scan sole for real holes.' : 'Openings switched off by staff: solid sole.') : null, state.base ? 'Template-based STL keeps the curved bottom of the original Fixifoot model.' : 'Parametric STL has a flat bottom on Z=0.'].filter(Boolean),
+      openingMode(p) && openingsFor(p) && !(state.base && tplKind(p)) ? (openingMode(p) === 'holes' ? `Ventilation holes are REAL through-holes in the STL (Ø ${state.openings.d || 3.5} mm, ${OPENING_PRESETS.holes[state.openings.density].label}); heel cup, arch support and edge margin kept solid.` : `Lattice openings are REAL through-openings in the sole STL (${OPENING_PRESETS.lattice[state.openings.density].label}); solid rim and strap-anchor areas.`) : openingMode(p) ? (state.base && tplKind(p) ? 'Template base selected: ventilation holes are not cut into template models – use the parametric / scan sole for real holes.' : 'Openings switched off by staff: solid sole.') : null, state.base ? 'Template-based STL keeps the curved bottom of the original Fixifoot model.' : 'Parametric STL has a flat bottom on Z=0.'].filter(Boolean),
     disclaimer: 'Comfort product, not a medical diagnosis. See a podiatrist for diabetes or pain.' };
 }
 $('#sendBtn').onclick = () => {
@@ -717,8 +735,18 @@ function renderStaff(keepView = true) {
   renderConditions();
   // product + template
   $('#staffProduct').innerHTML = R.PRODUCTS.map(x => `<option value="${x.id}" ${x.id === p.id ? 'selected' : ''}>${x.name}</option>`).join('');
-  $('#staffTemplate').value = p.kind === 'insole' ? state.base : ''; $('#staffTemplate').disabled = p.kind !== 'insole';
+  $('#staffTemplate').value = tplKind(p) ? state.base : ''; $('#staffTemplate').disabled = !tplKind(p);
   const om = openingMode(p); $('#openWrap').classList.toggle('hidden', !om);
+  const rec = recommendNow(), pp = spec.params;
+  $('#modelInfo').innerHTML = `<p class="tiny">⭐ Rule engine recommends: <b>${esc(R.PRODUCTS.find(x => x.id === rec.id)?.name || rec.id)}</b> – ${esc(rec.why)}${rec.id !== p.id ? ` <button class="linkbtn tiny" id="useRec">use it</button>` : ''}</p>` + (p.model ? `<table class="params"><tr><td colspan="2"><b>Model geometry</b></td></tr>
+    <tr><td>Thickness</td><td>${p.model.heelT} mm heel → ${p.model.foreT} mm forefoot${p.model.scaleWithSize ? ' (scaled by foot length)' : ''}</td></tr><tr><td>Length</td><td>${p.model.length === '3/4' ? '3/4 (ends ' + (p.model.frontMm ?? 6) + ' mm past met-head line)' : 'full length'}</td></tr>
+    <tr><td>Arch</td><td>${p.model.archBoost ? '+' + p.model.archBoost + ' mm strong arch' : 'scan arch'} · fill ${pp.archFill ?? 100}%</td></tr><tr><td>Heel cup</td><td>${pp.heelCupDepth} mm</td></tr>
+    <tr><td>Zones</td><td>${[(p.model.recesses || []).map(r => r.label + ' (' + r.depth + ' mm)').join(', '), pp.metPad && 'met pad', p.model.openings && 'ventilation holes', 'smooth toe area'].filter(Boolean).join(' · ')}</td></tr><tr><td>Edges</td><td>${p.model.rim} mm rounded rim</td></tr>
+    <tr><td colspan="2"><b>TPU print settings</b></td></tr><tr><td>Material</td><td>${esc(p.print.base)}</td></tr><tr><td>Top layer</td><td>${esc(p.print.top)}</td></tr>
+    <tr><td>Infill</td><td>${esc(p.print.pattern)} ${esc(p.print.infill)} · ${p.print.walls} walls · ${p.print.topLayers}/${p.print.bottomLayers} top/bottom · ${esc(p.print.layer)}</td></tr>
+    ${p.print.zones.map(z => `<tr><td>${esc(z.zone)}</td><td>${esc(z.infill)} – ${esc(z.why)}</td></tr>`).join('')}
+    <tr><td>Temps / speed</td><td>nozzle ${esc(p.print.nozzleC)} °C · bed ${esc(p.print.bedC)} °C · ${esc(p.print.speed)}</td></tr><tr><td>Note</td><td>${esc(p.print.notes)}</td></tr></table>` : '');
+  const ur = $('#useRec'); if (ur) ur.onclick = () => { const pr = R.PRODUCTS.find(x => x.id === rec.id); state.product = pr; state.color = pr.colors[0]; state.strapColor = pr.strapColors?.[0]; renderStaff(false); };
   if (om) {
     $('#openLbl').textContent = om === 'holes' ? 'Real ventilation holes (cut into the STL)' : 'Real lattice openings (cut into the STL)';
     $('#openChk').checked = state.openings.on;
@@ -729,7 +757,7 @@ function renderStaff(keepView = true) {
   }
   // 3D with zones
   staffViewer ||= new Viewer($('#staffViewer'));
-  const useTpl = state.base && p.kind === 'insole' && templateCache[state.base];
+  const useTpl = state.base && tplKind(p) && templateCache[state.base];
   const obj = productObject(side, spec, { zonesOn: true });
   staffViewer.set(obj, keepView && !!staffViewer.obj);
   if (om) { let st = null; obj.traverse?.(o => { if (o.userData?.openings) st = o.userData.openings; }); if (!st && obj.userData?.openings) st = obj.userData.openings;
@@ -818,7 +846,7 @@ function renderFit(keepView = false) {
   if (!fv) { $('#fitStats').innerHTML = '<tr><td class="muted">Fit check not available</td></tr>'; return; }
   const { md, fit, geo } = fv, st = fit.stats || {}, p = ensureProduct();
   $('#fitVerdict').textContent = fit.verdict; $('#fitVerdict').className = 'tag fit-' + fit.verdict.toLowerCase();
-  $('#fitTitle').textContent = `${sideName(side)} foot · ${p.name}${state.base && p.kind === 'insole' ? ' · template ' + state.base : ''}`;
+  $('#fitTitle').textContent = `${sideName(side)} foot · ${p.name}${state.base && tplKind(p) ? ' · template ' + state.base : ''}`;
   // 3D: product coloured by gap + ghost foot standing on it
   fitViewer ||= new Viewer($('#fitViewer'), { free: true });
   const grp = new THREE.Group();
@@ -833,7 +861,7 @@ function renderFit(keepView = false) {
   drawFitMap($('#fitCanvas'), md, fit);
   $('#fitStats').innerHTML = [['Contact area checked', `${st.areaCm2} cm² (${st.cells} cells @ ${md.grid.res} mm)`], ['Mean |gap|', `<b>${st.meanAbs} mm</b> (signed ${st.mean} mm)`], ['Within ±1 mm / ±2 mm', `<b>${st.within1}%</b> / ${st.within2}%`],
     ['Whole sole incl. modifications', fit.statsAll ? `${fit.statsAll.areaCm2} cm² · mean |gap| ${fit.statsAll.meanAbs} mm · ${fit.statsAll.within1}% within 1 mm` : '–'], ['Largest air gap', `${st.maxGap} mm`], ['Largest pressure (insole above foot)', `${st.maxPress} mm`], ['95th percentile |gap|', `${st.p95} mm`], ['Foot placement', `offset ${fit.tilt.offsetMm} mm · tilt ${fit.tilt.xDeg}° / ${fit.tilt.zDeg}°`],
-    ['Model', fv.scanBased ? (state.base && p.kind === 'insole' ? `template ${state.base} morphed to scan` : 'total contact from plantar map') : 'generic (total contact OFF)']].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+    ['Model', fv.scanBased ? (state.base && tplKind(p) ? `template ${state.base} morphed to scan` : 'total contact from plantar map') : 'generic (total contact OFF)']].map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
   $('#fitMods').innerHTML = fit.modStats.length ? `<p class="tiny muted" style="margin:8px 0 4px">Intentional clinical modifications (excluded from the score, hatched on the map):</p><table class="params">${fit.modStats.map(m => `<tr><td>${m.name}</td><td>${m.areaCm2} cm² · mean ${m.mean > 0 ? '+' : ''}${m.mean} mm</td></tr>`).join('')}</table>` : '';
   $('#fitNote').textContent = fit.verdict === 'PASS' ? 'PASS: mean gap under 1 mm and at least 80% of the contact area within ±1 mm.' : fit.verdict === 'WARN' ? 'WARN: check the scan alignment, the shoe size (trimmed length) or the arch fill before printing.' : 'FAIL: the product does not follow this scan – turn total contact ON or re-check the scan.';
 }

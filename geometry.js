@@ -166,8 +166,10 @@ export function hexTexture(holes) {
 // ---------- sole / insole surface ----------
 function topHeight(u, sn, p, kind, hw, integrate) {
   let base = kind === 'insole' ? (p._thick || 2.6) : kind === 'flipflop' ? 11 : 13;
+  const M = kind === 'insole' ? p._model : null; // v7 insole line
   // shell thickness by zone (clinical): thicker under heel/midfoot, thin (sulcus) forefoot so the toes have room
-  if (kind === 'insole') base = Math.max(1.6, base * (0.7 + 0.45 * (1 - smooth(.58, .78, u))));
+  if (M) base = Math.max(1.6, (p._scale || 1) * (M.heelT + (M.foreT - M.heelT) * smooth(.15, .75, u)));
+  else if (kind === 'insole') base = Math.max(1.6, base * (0.7 + 0.45 * (1 - smooth(.58, .78, u))));
   if (p.minThick) base = Math.max(base, p.minThick); // diabetic accommodative: >= 6 mm cushioning everywhere
   if (kind !== 'insole') base += 5 * (1 - smooth(.3, .72, u));
   let z = base;
@@ -196,14 +198,18 @@ function topHeight(u, sn, p, kind, hw, integrate) {
   // Morton's extension: firm 1.5 mm extension under the 1st MTP joint + hallux (hallux limitus)
   if (p.mortonExtension) z += 1.5 * smooth(.66, .7, u) * smooth(.25, .45, sn);
   if (p.toeCrest) z += k * 4 * gauss(u, .825, .022) * (1 - smooth(.45, .8, Math.abs(sn + .08)));
+  if (M?.archBoost) z += k * M.archBoost * gauss(u, .41, .1) * smooth(-0.2, 0.8, sn);
   let dep = 0;
+  for (const r of M?.recesses || []) { const e = r.at === 'met' ? [.725, 0, .045, .72] : r.at === 'hallux' ? [.85, .5, .045, .32] : [.12, 0, .07, .45]; z -= r.depth * (1 - smooth(.55, 1, Math.hypot((u - e[0]) / e[2], (sn - e[1]) / e[3]))); }
   if (p.heelCutout || p.offloadPockets) dep = Math.max(dep, 1.5 * ellIn(u, sn, .12, 0, .06, .38));
   if (p.sesamoidCutout) dep = Math.max(dep, 1.5 * ellIn(u, sn, .70, .58, .04, .22));
   if (p.offloadPockets) dep = Math.max(dep, 1.1 * ellIn(u, sn, .715, 0, .045, .7));
   if (p.firstMTPRelief) dep = Math.max(dep, 1.0 * ellIn(u, sn, .73, .75, .06, .3));
   z -= dep;
-  z -= smooth(.84, 1, Math.abs(sn)) * (p.noHardEdges ? 1.6 : 0.7) * (kind === 'insole' ? 1 : 0.6);
-  if (kind === 'insole') z -= 1.2 * smooth(.9, 1, u) + 0.8 * smooth(.1, 0, u);
+  z -= smooth(.84, 1, Math.abs(sn)) * (M ? M.rim * 1.3 : p.noHardEdges ? 1.6 : 0.7) * (kind === 'insole' ? 1 : 0.6);
+  if (M?.length === '3/4') { const uf = p._uMax || .78; z -= 0.6 * smooth(uf - .04, uf, u); }
+  else if (kind === 'insole') z -= 1.2 * smooth(.9, 1, u) + 0.8 * smooth(.1, 0, u);
+  if (M) z = Math.max(z, 1.2);
   return z;
 }
 function bottomHeight(u, p, kind) {
@@ -219,19 +225,23 @@ const zoneArea = z => z.rect ? (z.rect.u[1] - z.rect.u[0]) * (z.rect.s[1] - z.re
 
 export function buildSole(opts) { return buildSoleParam(opts); }
 function buildSoleParam(opts) {
-  const { L = 260, W = 100, params: p, kind = 'insole', side = 'R', zones = [], showZones = true, highlight = null, color = '#ffffff', integrate = true, uvMode = 'holes', flatBottom = false, openings = null } = opts;
+  let p = opts.params;
+  const { L = 260, W = 100, kind = 'insole', side = 'R', zones = [], showZones = true, highlight = null, color = '#ffffff', integrate = true, uvMode = 'holes', flatBottom = false, openings = null } = opts;
   const mir = side === 'R' ? -1 : 1, NU = 120, NV = 36;
+  const M = kind === 'insole' ? p._model : null, uMax = M?.length === '3/4' ? .72 + (M.frontMm ?? 6) / L : .997; // v7: 3/4 length ends past the met heads
+  if (M) p = { ...p, _uMax: uMax, _scale: M.scaleWithSize ? Math.min(1, Math.max(.75, (L - 15) / 240)) : 1 };
   const zs = [...zones].sort((a, b) => zoneArea(b) - zoneArea(a));
   const base = new THREE.Color(color), tmp = new THREE.Color(), dark = base.clone().multiplyScalar(kind === 'insole' ? 0.92 : 0.78);
   const rows = [];
   for (let i = 0; i < NU; i++) {
-    const t = i / (NU - 1), u = 0.003 + 0.994 * (0.5 - 0.5 * Math.cos(Math.PI * t));
-    const { m, l } = outline(u, W, { extraFore: p.forefootExtraWidth || 0, lateralFlare: p.lateralFlare });
+    const t = i / (NU - 1), u = 0.003 + (uMax - 0.003) * (0.5 - 0.5 * Math.cos(Math.PI * t));
+    let { m, l } = outline(u, W, { extraFore: p.forefootExtraWidth || 0, lateralFlare: p.lateralFlare });
+    if (uMax < .99) { const rf = .07, d = u - (uMax - rf); if (d > 0) { const f = Math.sqrt(Math.max(0.0004, 1 - (d / rf) ** 2)), c = (m + l) / 2; m = c + (m - c) * f; l = c + (l - c) * f; } } // rounded 3/4 front
     const hw = (m - l) / 2, bz = flatBottom ? 0 : bottomHeight(u, p, kind), row = [];
     for (let j = 0; j < NV; j++) {
       const sn = -1 + 2 * j / (NV - 1), s = l + (sn + 1) * hw;
       const tz = Math.max(bz + 1.2, bz + topHeight(u, sn, p, kind, hw, integrate));
-      row.push({ u, ui: (u - 0.003) / 0.994, sn, x: mir * s, y: (0.5 - u) * L, tz, bz });
+      row.push({ u, ui: (u - 0.003) / (uMax - 0.003), sn, x: mir * s, y: (0.5 - u) * L, tz, bz });
     }
     rows.push(row);
   }
@@ -297,6 +307,7 @@ export function buildProduct(product, opts) {
   const op = opts.openings || null; // v6: openings are real geometry; no fake alpha textures (preview must match the STL)
   if (product.id === 'perforated') g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', openings: op?.mode === 'holes' ? op : null, params: { ...opts.params, _thick: 2.2 } }));
   else if (product.id === 'fullcontact') g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', params: { ...opts.params, _thick: 3.6 } }));
+  else if (product.model) g.add(buildSole({ ...opts, kind: 'insole', uvMode: 'none', openings: op?.mode === 'holes' ? op : null, params: { ...opts.params, _model: product.model } })); // v7 line
   else if (product.id === 'flipflop') {
     const sole = buildSole({ ...opts, kind: 'flipflop', uvMode: 'none' }); g.add(sole);
     const S = sole.userData.surfaceAt, A = sole.userData.anchors, post = A ? A.post.clone() : S(.8, .32);
@@ -374,7 +385,7 @@ export function processUploaded(object, filename) {
 export function buildPrintableSole(product, opts) {
   const kind = product.kind === 'insole' ? 'insole' : product.kind;
   const thick = product.id === 'perforated' ? 2.2 : product.id === 'fullcontact' ? 3.6 : undefined;
-  const mesh = buildSole({ ...opts, kind, uvMode: 'none', zones: [], showZones: false, flatBottom: true, params: { ...opts.params, _thick: thick } });
+  const mesh = buildSole({ ...opts, kind, uvMode: 'none', zones: [], showZones: false, flatBottom: true, params: { ...opts.params, _thick: thick, ...(product.model ? { _model: product.model } : {}) } });
   let g = new THREE.BufferGeometry();
   g.setAttribute('position', mesh.geometry.attributes.position.clone());
   g.setIndex(mesh.geometry.index.clone());

@@ -319,6 +319,8 @@ export function modZoneTest(md, p) {
   if (p.lateralWedge) tests.push(['Lateral wedge', (u, sn) => sn < .2]);
   if ((p.archFill ?? 100) < 100) tests.push([`Arch fill ${p.archFill}%`, (u, sn) => Math.abs(u - .41) < .2 && sn > -.1]);
   tests.push(['Smooth forefoot (no toe ridges)', u => u > md.ballU - 4 / L]);
+  if (p._model && p.heelCupDepth > 14) tests.push([`Deep heel cup ${p.heelCupDepth} mm (model)`, u => u < .14]);
+  if (p._model?.archBoost) tests.push([`Arch support +${p._model.archBoost} mm (model)`, (u, sn) => Math.abs(u - md.archU) < .2 && sn > -.2]);
   if (p.toeCrest) tests.push(['Toe crest', u => Math.abs(u - (md.sulcusU - .012)) < .05]);
   if (p.mortonExtension) tests.push(["Morton's extension", (u, sn) => u > md.ballU - .06 && sn > .2]);
   if (p.heelCutout || p.offloadPockets) tests.push(['Heel offload pocket', (u, sn) => Math.hypot((u - .12) / .08, sn / .5) < 1]);
@@ -326,10 +328,18 @@ export function modZoneTest(md, p) {
   if (p.sesamoidCutout || p.firstMTPRelief) tests.push(['Big-toe joint relief', (u, sn) => Math.abs(u - md.ballU - .02) < .08 && sn > .3]);
   return tests;
 }
-function insoleFrame(md, kind, lastLen) {
+// v7 model extras: strong-arch boost and smooth-edged soft-insert pockets (diabetic met heads / hallux)
+export const RECESS_AT = { met: md => ({ cu: md.ballU + .005, cs: 0, ru: .045, rs: .72 }), hallux: md => ({ cu: Math.min(md.ballU + .125, .95), cs: .5, ru: .045, rs: .32 }), heel: () => ({ cu: .12, cs: 0, ru: .07, rs: .45 }) };
+function modelExtra(md, M, u, sn) {
+  let z = 0;
+  if (M.archBoost) z += M.archBoost * gauss(u, md.archU, .1) * smooth(-0.2, 0.8, sn);
+  for (const r of M.recesses || []) { const e = RECESS_AT[r.at](md); z -= r.depth * (1 - smooth(.55, 1, Math.hypot((u - e.cu) / e.ru, (sn - e.cs) / e.rs))); }
+  return z;
+}
+function insoleFrame(md, kind, lastLen, frontU = null) {
   const a = ALLOW[kind] || ALLOW.insole;
   let toe = a.toe; if (lastLen) toe = Math.max(2, lastLen - md.L - a.heel);
-  const zBack = md.zHeel + a.heel, zFront = md.zToe - toe, Li = zBack - zFront;
+  const zBack = md.zHeel + a.heel, zFront = frontU != null ? md.zOfU(frontU) : md.zToe - toe, Li = zBack - zFront; // v7: 3/4 length ends at frontU
   const Rb = .5 * md.heelW + a.side, Rf = .32 * md.W + a.side;
   const edge = ui => { // lateral/medial x of the outline at insole-u
     const z = zBack - ui * Li, r = md.rowAt(z), c = (r.lo + r.hi) / 2, dB = zBack - z, dF = z - zFront;
@@ -342,7 +352,10 @@ function insoleFrame(md, kind, lastLen) {
 }
 export function buildContactSole(md, opts) {
   const { params: p, kind = 'insole', zones = [], showZones = true, highlight = null, color = '#ffffff', uvMode = 'none', lastLen = null, openings = null } = opts;
-  const NU = 170, NV = 48, F = insoleFrame(md, kind, lastLen);
+  const M = kind === 'insole' ? p._model : null; // v7 insole line geometry (thickness profile, length, arch boost, soft pockets, rim)
+  const sc = M?.scaleWithSize ? clamp(md.L / 240, .75, 1) : 1;
+  const frontU = M?.length === '3/4' ? md.ballU + (M.frontMm ?? 6) / md.L : null;
+  const NU = 170, NV = 48, F = insoleFrame(md, kind, lastLen, frontU);
   const base = new THREE.Color(color), tmp = new THREE.Color(), dark = base.clone().multiplyScalar(kind === 'insole' ? 0.92 : 0.78);
   const thick0 = kind === 'insole' ? (p._thick || 2.6) : kind === 'flipflop' ? 11 : 13;
   const fill = (p.archFill ?? 100) / 100;
@@ -350,7 +363,8 @@ export function buildContactSole(md, opts) {
   for (let i = 0; i < NU; i++) {
     const t = i / (NU - 1), ui = 0.5 - 0.5 * Math.cos(Math.PI * t), e = F.edge(ui), u = md.uOfZ(e.z), row = [];
     // thickness varies LINEARLY heel -> toe (thicker heel, thinner forefoot / heel drop): a pure pitch the foot follows rigidly, so contact is kept
-    let th = thick0; if (kind === 'insole') th = Math.max(1.6, th * (1.15 - 0.45 * clamp(u, 0, 1))); else th += 5 * (1 - clamp(u, 0, 1));
+    let th = thick0; if (M) th = Math.max(1.6, sc * (M.heelT + (M.foreT - M.heelT) * clamp(u, 0, 1))); else if (kind === 'insole') th = Math.max(1.6, th * (1.15 - 0.45 * clamp(u, 0, 1))); else th += 5 * (1 - clamp(u, 0, 1));
+    if (frontU != null) th = Math.max(1.3, th * (1 - .4 * smooth(.88, 1, ui))); // 3/4: skived front edge
     if (p.minThick) th = Math.max(th, p.minThick);
     for (let j = 0; j < NV; j++) {
       const sn = -1 + 2 * j / (NV - 1), x = e.c + md.medialX * sn * e.half;
@@ -361,8 +375,10 @@ export function buildContactSole(md, opts) {
       const cup = p.heelCupDepth * smooth(.93, 1.05, Math.hypot(Math.max(0, (.12 - u) / .12), sf)) * (1 - smooth(.22, .38, u));
       const flange = p.lateralFlange ? 7 * smooth(.68, 1, -sn) * smooth(.02, .1, u) * (1 - smooth(.52, .68, u)) : 0;
       let top = th + Math.max(P, cup, flange) + mods(md, p, u, sn, e.half);
-      top -= smooth(.86, 1, Math.abs(sn)) * (p.noHardEdges ? 1.2 : 0.5) * (kind === 'insole' ? 1 : .6); // rounded rim
-      row.push({ u, ui, sn, x, z: e.z, tz: Math.max(1.0, top), bz: 0 });
+      if (M) top += modelExtra(md, M, u, sn);
+      top -= smooth(.86, 1, Math.abs(sn)) * (M ? M.rim : p.noHardEdges ? 1.2 : 0.5) * (kind === 'insole' ? 1 : .6); // rounded rim
+      if (frontU != null) top -= 0.6 * smooth(.9, 1, ui); // 3/4 front edge blends down
+      row.push({ u, ui, sn, x, z: e.z, tz: Math.max(M ? 1.2 : 1.0, top), bz: 0 });
     }
     rows.push(row);
   }

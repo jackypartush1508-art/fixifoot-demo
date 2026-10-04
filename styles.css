@@ -284,3 +284,9 @@ body.staff .mode-banner button.primary{background:#5cc2ff;color:#082a4f}
 .tag.fit-pass{background:#27ae60;color:#fff}.tag.fit-warn{background:#FFD22E;color:#162327}.tag.fit-fail{background:#d63031;color:#fff}
 .af-wrap{margin-top:8px}.af-wrap input{width:100%}
 .linkbtn{background:none;border:0;color:#015AD8;padding:0;cursor:pointer;text-decoration:underline}
+/* v7 insole line */
+.product.rec{border-color:#0099ff;box-shadow:0 0 0 3px rgba(0,153,255,.18)}
+.rec-badge{display:inline-block;background:#ffd22e;color:#162327;font-weight:700;font-size:12px;border-radius:999px;padding:2px 10px;margin-bottom:6px}
+.p-tag{display:block;color:#015ad8;font-weight:600;margin:2px 0 4px}
+.rec-why{color:#015ad8;margin-top:4px}
+#modelInfo table.params{margin-top:8px}
