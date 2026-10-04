@@ -6,6 +6,7 @@ import { STLLoader } from 'three/addons/STLLoader.js';
 import { OBJLoader } from 'three/addons/OBJLoader.js';
 import { STLExporter } from 'three/addons/STLExporter.js';
 import { buildFoot, buildProduct, buildPrintableSole, drawFootprint, adaptTemplate, wrapFoot, heatColor } from './geometry.js';
+import { Cloud, initCloud, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole } from './cloud.js';
 import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, buildContactSole, morphTemplate, toPrintable, fitCheck, colorByGap, drawFitMap, ALLOW } from './fit.js';
 
 const R = window.FixiRules;
@@ -17,7 +18,7 @@ const peso = n => '₱' + n.toLocaleString('en-PH');
 const state = {
   side: 'R', feet: {}, archOverride: {}, uploaded: {},
   answers: { diabetes: 'no', heelPain: 'no', jointPain: 'no', standing: '0-4', activity: 'moderate', weight: '60-90', lldMm: 5, lldSide: 'left' },
-  conditions: new Set(), sources: {}, qa: {}, qIndex: 0, staffAdds: new Set(), staffRemoves: new Set(), staff: sessionStorage.getItem('fxStaff') === '1',
+  conditions: new Set(), sources: {}, qa: {}, qIndex: 0, staffAdds: new Set(), staffRemoves: new Set(), staff: sessionStorage.getItem('fxStaff') === '1' && !(window.FIXI_CLOUD?.url && window.FIXI_CLOUD?.anonKey),
   sizeMode: 'scan', base: '', product: null, color: null, strapColor: null, integrate: true, showZones: true, highlight: null,
   history: ['s-welcome'], lastParams: null,
   look: { heat: true, wire: false, scan: false }, previewSide: 'both', totalContact: true, customerId: null, archFill: null, rawScans: {}, nudge: {}, alignSide: 'R', fitSide: 'R'
@@ -611,11 +612,11 @@ function buildSpec(id, stlInfos = []) {
     disclaimer: 'Comfort product, not a medical diagnosis. See a podiatrist for diabetes or pain.' };
 }
 $('#sendBtn').onclick = () => {
-  const id = newOrderId(), stls = Object.keys(state.feet).map(s => buildStl(s, id));
-  download(`${id}-spec.json`, JSON.stringify(buildSpec(id, stls.map(s => s.info)), null, 2), 'application/json');
+  const id = newOrderId(), stls = Object.keys(state.feet).map(s => buildStl(s, id)), spec = buildSpec(id, stls.map(s => s.info));
+  download(`${id}-spec.json`, JSON.stringify(spec, null, 2), 'application/json');
   stls.forEach((s, i) => setTimeout(() => download(s.name, s.data, 'model/stl'), 500 * (i + 1)));
   toast(`Demo order ${id}: spec + ${stls.length} STL file(s) downloaded`, 4000);
-  recordOrder(id, 'production');
+  recordOrder(id, 'production', spec, stls);
 };
 $('#orderBtn').onclick = () => {
   const name = $('#custName').value.trim(), phone = $('#custPhone').value.trim();
@@ -632,7 +633,7 @@ const STAFF_PIN = '1234'; // demo PIN – change here
 function renderBanner() {
   const onStaffScreen = $('#s-staff').classList.contains('active');
   $('#modeBanner').innerHTML = state.staff
-    ? `<span class="mb-label">🛠 STAFF VIEW</span>${onStaffScreen ? '' : '<button class="primary" id="mbDash">Staff dashboard</button>'}<button id="mbCust">👤 Customer view</button>`
+    ? `<span class="mb-label">🛠 STAFF VIEW${Cloud.configured ? (cloudOn() ? ' · ☁️' : ' · offline') : ''}</span>${onStaffScreen ? '' : '<button class="primary" id="mbDash">Staff dashboard</button>'}<button id="mbCust">👤 Customer view</button>`
     : `<span class="mb-label">👤 Customer view</span><button id="mbStaff">🛠 Switch to Staff view</button>`;
   $('#mbDash') && ($('#mbDash').onclick = () => show('s-staff'));
   $('#mbCust') && ($('#mbCust').onclick = () => setStaff(false));
@@ -645,7 +646,35 @@ function setStaff(on) {
   else { toast('Customer view'); if ($('#s-staff').classList.contains('active')) { state.history = state.history.filter(h => h !== 's-staff'); show(state.history[state.history.length - 1] || 's-welcome', false); } else { const act = document.querySelector('.screen.active'); if (act && onEnter[act.id] && !['s-scan'].includes(act.id)) onEnter[act.id](); } }
   renderBanner();
 }
-function askPin() {
+function askPin() { if (Cloud.configured && Cloud.online && Cloud.client && navigator.onLine !== false) return askLogin(); return askPinLocal(); }
+function askLogin() {
+  if (Cloud.session && Cloud.ready) { setStaff(true); return; }
+  const inp = 'style="width:100%;font-size:17px;padding:12px;border-radius:12px;border:2px solid #e2e9f1;margin:4px 0"';
+  if (Cloud.session && !Cloud.ready) {
+    sheet(`<h3>⏳ Waiting for approval</h3><p class="muted">You are signed in as <b>${esc(Cloud.session.user.email)}</b>, but an admin has not approved this staff account yet. Customer data stays hidden until then.</p><button class="btn primary big" id="lgRetry">Check again</button><button class="btn ghost" id="lgOut">Sign out</button>`);
+    $('#lgRetry').onclick = async () => { await signOut().catch(() => {}); askLogin(); toast('Please sign in again'); };
+    $('#lgOut').onclick = async () => { await signOut(); $('#sheet').classList.add('hidden'); };
+    return;
+  }
+  sheet(`<h3>🛠 Staff sign in</h3><p class="muted small">Staff accounts are stored in Fixifoot's secure cloud. Customers don't need to sign in.</p>
+    <input id="lgEmail" type="email" autocomplete="username" placeholder="Email" ${inp}><input id="lgPass" type="password" autocomplete="current-password" placeholder="Password" ${inp}>
+    <input id="lgName" placeholder="Your name (for new accounts)" class="hidden" ${inp}>
+    <p class="tiny" id="lgMsg" style="min-height:1.2em"></p>
+    <button class="btn primary big" id="lgIn">Sign in</button>
+    <div class="crm-actions"><button class="btn ghost" id="lgUp">Create staff account</button><button class="btn ghost" id="lgForgot">Forgot password</button></div>
+    <p class="tiny muted">New accounts must confirm their email and be approved by an admin.</p>`);
+  const msg = (t, bad) => { $('#lgMsg').textContent = t; $('#lgMsg').style.color = bad ? '#c0392b' : '#0a7d3b'; };
+  const vals = () => ({ email: $('#lgEmail').value.trim(), pass: $('#lgPass').value });
+  const go = async () => { const { email, pass } = vals(); if (!email || !pass) return msg('Enter email and password', true); msg('Signing in…');
+    try { const p = await signIn(email, pass); if (!Cloud.ready) { msg(p ? 'Account pending admin approval.' : 'No staff profile found.', true); return; } $('#sheet').classList.add('hidden'); setStaff(true); } catch (e) { msg(e.message, true); } };
+  $('#lgIn').onclick = go; $('#lgPass').onkeydown = e => e.key === 'Enter' && go();
+  $('#lgUp').onclick = async () => { const nm = $('#lgName'); if (nm.classList.contains('hidden')) { nm.classList.remove('hidden'); $('#lgUp').textContent = 'Create account now'; return msg('Enter email, a password (8+ chars) and your name'); }
+    const { email, pass } = vals(); if (!email || pass.length < 8) return msg('Email and a password of 8+ characters needed', true);
+    try { const r = await signUp(email, pass, nm.value.trim()); msg(r.needsConfirm ? 'Check your email to confirm, then ask an admin to approve you.' : 'Account created – waiting for admin approval.'); } catch (e) { msg(e.message, true); } };
+  $('#lgForgot').onclick = async () => { const { email } = vals(); if (!email) return msg('Enter your email first', true); try { await resetPassword(email); msg('Password reset email sent.'); } catch (e) { msg(e.message, true); } };
+  setTimeout(() => $('#lgEmail').focus(), 50);
+}
+function askPinLocal() {
   sheet(`<h3>🛠 Staff view</h3><p class="muted">See detected problems, all settings, the 3D insole with zones, and download print-ready STL files.</p><p class="alert info" style="text-align:center"><b>Demo PIN: 1234</b></p><input id="pinIn" type="password" inputmode="numeric" maxlength="6" placeholder="Enter PIN" style="width:100%;font-size:22px;padding:14px;border-radius:14px;border:2px solid #e2e9f1;text-align:center;letter-spacing:6px"><button class="btn primary big" id="pinOk">Open staff dashboard</button>`);
   const ok = () => { if ($('#pinIn').value === STAFF_PIN) { $('#sheet').classList.add('hidden'); setStaff(true); } else { $('#pinIn').value = ''; $('#pinIn').placeholder = 'Wrong PIN – try 1234'; } };
   $('#pinOk').onclick = ok; $('#pinIn').onkeydown = e => e.key === 'Enter' && ok(); setTimeout(() => $('#pinIn').focus(), 50);
@@ -805,8 +834,21 @@ $('#dlSpec').onclick = () => { const id = getStaffOrderId(); const infos = ['R',
 /* ---------------- on-device CRM (localStorage, demo) ---------------- */
 const CRM_KEY = 'fxCRM_v1';
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const crmAll = () => { try { return JSON.parse(localStorage.getItem(CRM_KEY)) || []; } catch { return []; } };
-const crmSave = list => { try { localStorage.setItem(CRM_KEY, JSON.stringify(list)); } catch (e) { toast('Could not save (storage full?)'); } };
+const localAll = () => { try { return JSON.parse(localStorage.getItem(CRM_KEY)) || []; } catch { return []; } };
+const localSave = list => { try { localStorage.setItem(CRM_KEY, JSON.stringify(list)); } catch (e) { toast('Could not save (storage full?)'); } };
+// v5: when a Supabase staff session is active the CRM lives in the cloud (cached in memory); otherwise on this device.
+let cloudList = [], cloudQueue = Promise.resolve();
+const cloudOn = () => Cloud.configured && Cloud.online && Cloud.ready;
+const crmAll = () => cloudOn() ? cloudList : localAll();
+const crmSave = list => { if (cloudOn()) cloudList = list; else localSave(list); };
+const cloudJob = (label, fn) => { cloudQueue = cloudQueue.then(fn).then(() => { $('#crmSync') && ($('#crmSync').textContent = '☁️ synced ' + new Date().toLocaleTimeString('en-PH', { timeStyle: 'short' })); }).catch(e => { console.warn(label, e); toast('Cloud ' + label + ' failed: ' + e.message, 4500); }); return cloudQueue; };
+const newCustId = () => cloudOn() ? crypto.randomUUID() : 'C' + Date.now().toString(36).toUpperCase();
+function rawMeshFiles() {
+  const out = {};
+  for (const sd of ['R', 'L']) { const r = state.rawScans[sd]; if (r?.geo && state.feet[sd]?.source === 'file') out[sd] = new Blob([new STLExporter().parse(new THREE.Mesh(r.geo), { binary: true })], { type: 'model/stl' }); }
+  return out;
+}
+async function refreshCloud() { if (!cloudOn()) return; cloudList = await fetchCustomers(); }
 const fmtDate = iso => new Date(iso).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' });
 function snapshot() {
   const sp = Object.fromEntries(Object.keys(state.feet).map(s => [s, currentSpec(s)]));
@@ -821,17 +863,20 @@ function saveCurrentCustomer(name, phone) {
   const list = crmAll(), now = new Date().toISOString();
   let c = state.customerId && list.find(x => x.id === state.customerId);
   if (!c && phone) c = list.find(x => x.phone && x.phone.replace(/\D/g, '') === phone.replace(/\D/g, ''));
-  if (!c) { c = { id: 'C' + Date.now().toString(36).toUpperCase(), createdAt: now, orders: [] }; list.unshift(c); }
+  if (!c) { c = { id: newCustId(), createdAt: now, orders: [] }; list.unshift(c); }
   Object.assign(c, { name: name || c.name || 'Walk-in customer', phone: phone ?? c.phone ?? '', updatedAt: now }, snapshot());
-  state.customerId = c.id; crmSave(list); return c;
+  state.customerId = c.id; crmSave(list);
+  if (cloudOn()) { const files = rawMeshFiles(); cloudJob('save', () => saveCustomerCloud(c, files)); }
+  return c;
 }
-function recordOrder(id, by) {
+function recordOrder(id, by, spec = null, stls = []) {
   const list = crmAll(); let c = list.find(x => x.id === state.customerId);
-  if (!c) { c = saveCurrentCustomer($('#custName')?.value.trim() || 'Walk-in customer', $('#custPhone')?.value.trim() || ''); return recordOrder(id, by); }
+  if (!c) { c = saveCurrentCustomer($('#custName')?.value.trim() || 'Walk-in customer', $('#custPhone')?.value.trim() || ''); return recordOrder(id, by, spec, stls); }
   const p = ensureProduct(), lines = priceLines(currentSpec());
   Object.assign(c, snapshot(), { updatedAt: new Date().toISOString() });
   c.orders = c.orders || []; if (!c.orders.some(o => o.id === id)) c.orders.unshift({ id, date: new Date().toISOString(), productId: p.id, product: p.name, color: state.color, base: state.base || 'parametric', sides: Object.keys(state.feet), total: lines.reduce((s, l) => s + l[1], 0), by });
   crmSave(list);
+  if (cloudOn()) { const o = c.orders.find(o => o.id === id), sp = spec || buildSpec(id, stls.map(x => x.info)); cloudJob('order', () => saveCustomerCloud(c, rawMeshFiles()).then(() => insertOrderCloud(c, o, sp, stls))); }
 }
 function loadCustomer(c) {
   state.feet = JSON.parse(JSON.stringify(c.feet || {})); state.uploaded = {}; state.archOverride = { ...(c.archOverride || {}) };
@@ -861,10 +906,37 @@ function problemNames(c) {
   Object.assign(state, { feet: saved.feet, qa: saved.qa, staffAdds: saved.adds, staffRemoves: saved.rem, archOverride: saved.ov, answers: saved.ans, conditions: saved.cond, sources: saved.src });
   return out;
 }
+async function enterCRM() {
+  if (cloudOn()) { $('#crmList').innerHTML = '<p class="muted center">Loading customers from the cloud…</p>'; try { await cloudQueue; await refreshCloud(); } catch (e) { toast('Could not load cloud customers: ' + e.message, 4500); } }
+  renderCRM();
+}
+function renderCloudTools() {
+  const el = $('#crmCloud'); if (!el) return;
+  $('#crmTag').textContent = cloudOn() ? '☁️ Supabase cloud' : 'On this device';
+  if (!cloudOn()) { el.innerHTML = ''; return; }
+  const pending = localAll().filter(c => !String(c.id).startsWith('C-DEMO') && !c.seed);
+  el.innerHTML = `<div class="staff-top">${pending.length ? `<button class="btn ghost" id="crmUpload">⬆️ Upload ${pending.length} on-device customer(s)</button>` : ''}${Cloud.isAdmin ? '<button class="btn ghost" id="crmStaffBtn">👥 Staff accounts</button>' : ''}<button class="btn ghost" id="crmSignOut">Sign out</button></div>`;
+  $('#crmSignOut').onclick = async () => { await signOut(); cloudList = []; setStaff(false); toast('Signed out'); };
+  $('#crmStaffBtn') && ($('#crmStaffBtn').onclick = openStaffAdmin);
+  $('#crmUpload') && ($('#crmUpload').onclick = async () => {
+    const btn = $('#crmUpload'); btn.disabled = true; btn.textContent = 'Uploading…'; let n = 0;
+    for (const lc of pending) {
+      try { const c = { ...JSON.parse(JSON.stringify(lc)), id: crypto.randomUUID(), scanSig: {} }; await saveCustomerCloud(c); for (const o of (lc.orders || []).slice().reverse()) await insertOrderCloud(c, o, null, []); n++; localSave(localAll().filter(x => x.id !== lc.id)); }
+      catch (e) { toast('Upload failed for ' + lc.name + ': ' + e.message, 4500); break; }
+    }
+    toast(`${n} customer(s) uploaded to the cloud`); enterCRM();
+  });
+}
+async function openStaffAdmin() {
+  let rows = []; try { rows = await listStaff(); } catch (e) { toast(e.message); return; }
+  sheet(`<h3>👥 Staff accounts</h3><p class="muted small">New sign-ups start as <b>pending</b> and see no customer data until you approve them.</p><div class="crm-orders">${rows.map(r => `<div class="row-between"><span><b>${esc(r.name || r.email)}</b><br><small class="muted">${esc(r.email)}</small></span><select data-uid="${esc(r.user_id)}" ${r.user_id === Cloud.session.user.id ? 'disabled' : ''}>${['pending', 'staff', 'admin'].map(x => `<option ${x === r.role ? 'selected' : ''}>${x}</option>`).join('')}</select></div>`).join('')}</div>`);
+  $$('#sheet select[data-uid]').forEach(sel => sel.onchange = async () => { try { await setRole(sel.dataset.uid, sel.value); toast('Role updated'); } catch (e) { toast(e.message); } });
+}
 function renderCRM() {
   const q = ($('#crmSearch').value || '').toLowerCase().trim(), list = crmAll();
   const hits = list.filter(c => !q || [c.name, c.phone, c.id, ...(c.orders || []).map(o => o.id)].join(' ').toLowerCase().includes(q));
-  $('#crmCount').textContent = `${hits.length} of ${list.length} customers · saved on this device`;
+  $('#crmCount').innerHTML = `${hits.length} of ${list.length} customers · ${cloudOn() ? `in Supabase cloud · signed in as ${esc(Cloud.profile.email)} (${Cloud.profile.role}) <span id="crmSync"></span>` : Cloud.configured ? 'saved on this device (offline / not signed in)' : 'saved on this device'}`;
+  renderCloudTools();
   $('#crmList').innerHTML = hits.length ? hits.map(c => {
     const feet = ['R', 'L'].filter(s => c.feet?.[s]).map(s => `${s}: ${R.ARCH_TYPES[c.archOverride?.[s] || c.feet[s].archType]?.short} · ${c.feet[s].length} mm`).join(' &nbsp;|&nbsp; ');
     return `<div class="crm-item ${c.id === state.customerId ? 'on' : ''}" data-id="${esc(c.id)}"><div class="crm-av">${esc((c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase())}</div>
@@ -875,25 +947,30 @@ function renderCRM() {
 function openCustomer(id) {
   const c = crmAll().find(x => x.id === id); if (!c) return;
   const probs = problemNames(c), s = c.settings || {}, pf = s.perFoot && Object.keys(s.perFoot).length ? s.perFoot : probs.perFoot;
-  sheet(`<div class="row-between"><h3 style="margin:0">${esc(c.name)}</h3><span class="tag">${esc(c.id)}</span></div>
+  sheet(`<div class="row-between"><h3 style="margin:0">${esc(c.name)}</h3><span class="tag" title="${esc(c.id)}">${esc(String(c.id).length > 12 ? String(c.id).slice(0, 8) : c.id)}</span></div>
     <p class="muted small" style="margin:4px 0 10px">📞 ${esc(c.phone || '–')} · customer since ${fmtDate(c.createdAt)}</p>
-    <h4 class="crm-h">Saved scans</h4><div class="crm-feet">${['R', 'L'].map(sd => { const f = c.feet?.[sd]; return `<div class="crm-foot"><b>${sideName(sd)}</b>${f ? `<span>${R.ARCH_TYPES[c.archOverride?.[sd] || f.archType].short}</span><span>${f.length} × ${f.width} mm · EU ${sizeFromLength(f.length).eu}</span><span class="tiny muted">${f.source === 'file' ? 'file ' + esc(f.file) + (f.map ? ' · 2 mm plantar map ✓' : '') : 'demo scan'} · CSI ${f.csi}%</span>` : '<span class="muted">not scanned</span>'}</div>`; }).join('')}</div>
+    <h4 class="crm-h">Saved scans</h4><div class="crm-feet">${['R', 'L'].map(sd => { const f = c.feet?.[sd]; return `<div class="crm-foot"><b>${sideName(sd)}</b>${f ? `<span>${R.ARCH_TYPES[c.archOverride?.[sd] || f.archType].short}</span><span>${f.length} × ${f.width} mm · EU ${sizeFromLength(f.length).eu}</span><span class="tiny muted">${f.meshPath ? '☁️ raw scan in Storage · ' : ''}${f.source === 'file' ? 'file ' + esc(f.file) + (f.map ? ' · 2 mm plantar map ✓' : '') : 'demo scan'} · CSI ${f.csi}%</span>` : '<span class="muted">not scanned</span>'}</div>`; }).join('')}</div>
     <h4 class="crm-h">Detected problems</h4><div class="zone-chips">${probs.length ? probs.map(n => `<span class="zchip">${esc(n)}</span>`).join('') : '<span class="muted small">none</span>'}</div>
     <h4 class="crm-h">Last settings</h4><table class="params">${Object.entries(pf).map(([sd, x]) => `<tr><td>${sideName(sd)}</td><td>${R.ARCH_TYPES[x.archType]?.short} · arch ${x.archHeight} mm · cup ${x.heelCupDepth} mm${x.medialPost ? ' · post ' + x.medialPost + '°' : ''}${x.lateralWedge ? ' · wedge ' + x.lateralWedge + '°' : ''}${x.heelLift ? ' · lift ' + x.heelLift + ' mm' : ''}${x.metPad ? ' · met pad' : ''} · ${x.shore}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">–</td></tr>'}
       <tr><td>Product</td><td>${esc(R.PRODUCTS.find(p => p.id === s.productId)?.name || '–')}${s.base ? ' · template ' + esc(s.base) : ''}</td></tr></table>
     <h4 class="crm-h">Order history</h4>${(c.orders || []).length ? `<div class="crm-orders">${c.orders.map(o => `<div class="row-between"><span><b>${esc(o.id)}</b><br><small class="muted">${fmtDate(o.date)} · ${esc(o.product)} · ${o.sides.join('+')}</small></span><span>${peso(o.total)}</span></div>`).join('')}</div>` : '<p class="muted small">No orders yet.</p>'}
     <button class="btn primary big" id="crmReorder">↻ New order from saved scan</button>
-    <div class="crm-actions"><button class="btn ghost" id="crmLoad">Open in dashboard</button><button class="btn ghost" id="crmDel">Delete</button></div>
+    <div class="crm-actions"><button class="btn ghost" id="crmLoad">Open in dashboard</button><button class="btn ghost" id="crmDel"${cloudOn() && !Cloud.isAdmin ? ' disabled title="Admins only"' : ''}>Delete</button></div>
     <p class="tiny muted">Re-order regenerates both STL files from the stored scan data and settings – no rescan needed.</p>`);
   $('#crmLoad').onclick = () => { loadCustomer(c); $('#sheet').classList.add('hidden'); show('s-staff'); toast(c.name + ' loaded'); };
   $('#crmReorder').onclick = () => {
     loadCustomer(c); ensureProduct(); $('#sheet').classList.add('hidden');
     const id = newOrderId(), stls = Object.keys(state.feet).map(sd => buildStl(sd, id));
-    download(`${id}-spec.json`, JSON.stringify({ ...buildSpec(id, stls.map(x => x.info)), customer: { id: c.id, name: c.name, phone: c.phone }, reorderFromSavedScan: true }, null, 2), 'application/json');
+    const spec = { ...buildSpec(id, stls.map(x => x.info)), customer: { id: c.id, name: c.name, phone: c.phone }, reorderFromSavedScan: true };
+    download(`${id}-spec.json`, JSON.stringify(spec, null, 2), 'application/json');
     stls.forEach((x, i) => setTimeout(() => download(x.name, x.data, 'model/stl'), 400 * (i + 1)));
-    recordOrder(id, 'reorder'); show('s-staff'); toast(`Re-order ${id}: ${stls.length} STL + spec regenerated from saved scan`, 4200);
+    recordOrder(id, 'reorder', spec, stls); show('s-staff'); toast(`Re-order ${id}: ${stls.length} STL + spec regenerated from saved scan`, 4200);
   };
-  $('#crmDel').onclick = () => { if (!confirm('Delete ' + c.name + ' from this device?')) return; crmSave(crmAll().filter(x => x.id !== c.id)); if (state.customerId === c.id) state.customerId = null; $('#sheet').classList.add('hidden'); renderCRM(); };
+  $('#crmDel').onclick = async () => {
+    if (cloudOn() && !Cloud.isAdmin) { toast('Only an admin can delete customers'); return; }
+    if (!confirm('Delete ' + c.name + (cloudOn() ? ' (cloud record, scans and STL files)?' : ' from this device?'))) return;
+    if (cloudOn()) { try { await cloudQueue; await deleteCustomerCloud(c); } catch (e) { toast('Delete failed: ' + e.message, 4500); return; } }
+    crmSave(crmAll().filter(x => x.id !== c.id)); if (state.customerId === c.id) state.customerId = null; $('#sheet').classList.add('hidden'); renderCRM(); };
 }
 $('#crmSearch').oninput = renderCRM;
 $('#crmBtn').onclick = () => show('s-crm');
@@ -914,7 +991,7 @@ const onEnter = {
   's-result': () => { recompute(); state.highlight = null; requestAnimationFrame(() => renderResult(false)); },
   's-order': () => { recompute(); renderOrder(); },
   's-staff': () => { if (!state.staff) { askPin(); return; } renderStaff(false); },
-  's-crm': () => { if (!state.staff) { askPin(); return; } renderCRM(); },
+  's-crm': () => { if (!state.staff) { askPin(); return; } enterCRM(); },
   's-align': () => { if (!state.staff) { askPin(); return; } requestAnimationFrame(() => renderAlign(false)); },
   's-fit': () => { if (!state.staff) { askPin(); return; } recompute(); requestAnimationFrame(() => renderFit(false)); }
 };
@@ -936,6 +1013,13 @@ if (qp.get('demo')) {
 }
 window.__fixiFit = { alignScan, rasterizePlantar, deriveModel, buildContactSole, morphTemplate, toPrintable, fitCheck, buildFoot, STLLoader, OBJLoader, STLExporter, THREE, loadTemplate, templateCache, footModel, fitFor, buildStl, state, objToGeo };
 seedCRM();
+// v5 cloud init: no keys in config.js -> purely offline demo (PIN + on-device CRM)
+if (Cloud.configured) initCloud().then(() => {
+  if (!Cloud.online) { toast('Cloud unreachable – working offline on this device', 3500); }
+  else if (sessionStorage.getItem('fxStaff') === '1' && Cloud.ready) setStaff(true);
+  onCloudChange(() => { if (state.staff && Cloud.online && !Cloud.ready) setStaff(false); renderBanner(); });
+  renderBanner();
+});
 show(qp.get('demo') && qp.get('screen') ? qp.get('screen') : 's-welcome');
 // branded splash
 setTimeout(() => $('#splash')?.classList.add('gone'), qp.get('nosplash') ? 0 : 1100); setTimeout(() => $('#splash')?.remove(), qp.get('nosplash') ? 0 : 1700);

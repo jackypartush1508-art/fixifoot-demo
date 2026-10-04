@@ -303,7 +303,8 @@
 
   <!-- CRM -->
   <section class="screen" id="s-crm">
-    <div class="row-between"><h2>Customers</h2><span class="tag">On this device</span></div>
+    <div class="row-between"><h2>Customers</h2><span class="tag" id="crmTag">On this device</span></div>
+    <div id="crmCloud"></div>
     <input class="search" id="crmSearch" type="search" placeholder="Search name, phone or order no.">
     <p class="tiny muted" id="crmCount"></p>
     <div id="crmList"></div>
@@ -314,6 +315,7 @@
   <div class="toast" id="toast"></div>
   <div class="sheet hidden" id="sheet"><div class="sheet-inner"><button class="icon-btn sheet-close" id="sheetClose">✕</button><div id="sheetBody"></div></div></div>
 </div>
+<script src="config.js"></script>
 <script src="rules.js"></script>
 <script src="assets/foot-scan.js"></script>
 <script type="module" src="app.js"></script>
