@@ -289,7 +289,7 @@ export function encodeGrid(gr) { const q = new Int16Array(gr.raw.length); for (l
 export function decodeGrid(e) { const s = atob(e.q), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); const q = new Int16Array(u.buffer), raw = new Float32Array(q.length), sil = new Uint8Array(q.length); for (let k = 0; k < q.length; k++) { raw[k] = q[k] <= -32767 ? NaN : q[k] / 10; sil[k] = q[k] === -32768 ? 0 : 1; } return { res: e.res, x0: e.x0, z0: e.z0, nx: e.nx, nz: e.nz, raw, sil }; }
 
 /* ---------------- 3. total-contact insole / footbed ---------------- */
-export const ALLOW = { insole: { side: 1.5, heel: 1, toe: 6 }, flipflop: { side: 6, heel: 5, toe: 8 }, slide: { side: 6, heel: 5, toe: 8 } };
+export const ALLOW = { insole: { side: 1.5, heel: 1, toe: 6 }, flipflop: { side: 6, heel: 5, toe: 8 }, slide: { side: 6, heel: 5, toe: 8 }, sandal: { side: 4, heel: 5, toe: 12 }, clog: { side: 5, heel: 6, toe: 7 } }; // v13: two-strap sandal / clog
 // clinical modifications on top of the scanned surface; u = foot length fraction (0 heel, 1 toe tip), sn = +1 medial
 function mods(md, p, u, sn, hw) {
   let z = 0; const rad = Math.PI / 180, L = md.L;
@@ -378,7 +378,7 @@ export function buildContactSole(md, opts) {
     if (frontU != null) th = Math.max(1.3, th * (1 - .4 * smooth(.88, 1, ui))); // 3/4: skived front edge
     if (p.minThick) th = Math.max(th, p.minThick);
     for (let j = 0; j < NV; j++) {
-      const sn = -1 + 2 * j / (NV - 1), x = e.c + md.medialX * sn * e.half;
+      const sn = -1 + 2 * j / (NV - 1), x = e.c + md.medialX * sn * (p._notch ? Math.max(1.5, e.half - p._notch(e.z)) : e.half); // v13: strap notches (two-strap sandal)
       // plantar height capped just above the measured arch apex: at the outline the lower envelope climbs the side of the foot, the insole must not
       const P = Math.min(md.sampleF(x, e.z), md.archCap) * (1 - (1 - fill) * gauss(u, .41, .12) * smooth(-0.2, 0.6, sn));
       // heel cup wall rises from the SCANNED heel contour (foot-relative position sf = 1 at the footprint edge)

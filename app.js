@@ -15,6 +15,7 @@ import { Cloud, initCloud, pingCloud, updateOrderPaymentCloud, updateOrderStatus
 import { buildFittingPdf } from './receipt.js';
 import { PAY_METHODS, bizSettings, saveBizSettings, bizConfigured, buildReceiptPdf, downloadBlob, shareBlob, printBlob } from './receipt.js';
 import { measureFoot, prescribe, applyCorrections, rearfootFromMesh } from './orthotic.js';
+import { buildFootwear, measureUpper, sandalNotch, bedFit, rotateOnBed, surfaceArea, printEstimate, toBed, BEDS, currentBed } from './footwear.js';
 import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, buildContactSole, morphTemplate, toPrintable, fitCheck, colorByGap, drawFitMap, ALLOW } from './fit.js';
 
 const R = window.FixiRules;
@@ -30,6 +31,7 @@ const state = {
   sizeMode: 'scan', base: '', product: null, color: null, strapColor: null, integrate: true, showZones: true, highlight: null,
   history: ['s-welcome'], lastParams: null,
   look: { heat: true, wire: false, scan: false }, previewSide: 'both', totalContact: true, customerId: null, archFill: null, rawScans: {}, nudge: {}, alignSide: 'R', fitSide: 'R',
+  heelStrap: true, // v13: Comfort Clog heel strap (optional)
   twoMat: true, // v8: show the 2-material split (both bodies in their colours) for the insole line
   openings: { on: true, density: 'med', d: 3.5 }, // v6: real ventilation holes (perforated) / lattice (slide) in preview + STL
   design: null // v9: { productId, colors: { base, top } (palette ids), text, size, keptSuggestion } – chosen BEFORE the scan
@@ -292,7 +294,8 @@ function applyAligned(res, name, raw) {
   state.rawScans[side] = { geo: raw, name, info: res.info };
   state.feet[side] = { side, source: 'file', file: name, archType, length: Math.round(md.L), width: Math.round(md.W), heelWidth: Math.round(md.heelW), csi: md.csi, ahi: { high: .37, normal: .34, low: .315, flat: .29 }[archType], peakForefootPressure: 0.8, triangles: res.info.triangles,
     units: res.info.units, archHeightMm: md.archH, map: encodeGrid(md.grid), mapId: Date.now() + Math.random(), align: { ...res.info } };
-  const rf = rearfootFromMesh(res.geo, md); if (rf != null) state.feet[side].rearfootDeg = rf; // v12 orthotist: heel valgus/varus from the 3D heel
+  const rf = rearfootFromMesh(res.geo, md); if (rf != null) state.feet[side].rearfootDeg = rf;
+  try { state.feet[side].upper = measureUpper(res.geo, md); } catch (e) { console.warn('upper envelope', e); } // v13: top-of-foot envelope for straps / clog upper // v12 orthotist: heel valgus/varus from the 3D heel
   delete state.archOverride[side]; delete modelCache[side]; if (state.fitOver) delete state.fitOver[side];
   return side;
 }
@@ -518,6 +521,7 @@ function currentSpec(side = state.side) {
     res.notes.push(`Model ${pr.name}: ${pr.model.summary}. Smooth toe area (v6.1), no ridges between the toes.`);
   }
   if (state.archFill != null) res.params.archFill = state.archFill;
+  if (pr?.shoe) res.notes.push(`Model ${pr.name}: ${pr.shoe.summary}.`);
   // v12 orthotist engine: measurements -> per-foot prescription -> params (staff overrides win)
   const fit = fittingFor(side);
   if (fit) {
@@ -529,7 +533,8 @@ function currentSpec(side = state.side) {
     res.fitting = { ...fit, over, applied: { archBoost: res.params.archBoost, archFill: res.params.archFill, heelCupDepth: res.params.heelCupDepth, medialPost: res.params.medialPost, lateralWedge: res.params.lateralWedge, metPad: !!res.params.metPad, heelLift: res.params.heelLift, offloadPockets: !!res.params.offloadPockets, firstMTPRelief: !!res.params.firstMTPRelief }, modelArch: mb };
     res.notes.unshift(`Orthotist engine${fit.measurements.approx ? ' (APPROX – no scan)' : ''}: ${fit.corrections.filter(c => (over[c.id] ?? c.value)).map(c => c.label + ' ' + fmtCorr(c, over[c.id] ?? c.value)).join(', ') || 'no corrections'} – starting prescription, to be reviewed by a licensed orthotist / podiatrist.`);
   }
-  const md = scanModel(side);
+  if (pr?.shoe) { res.params.heelCupDepth = Math.max(res.params.heelCupDepth || 0, pr.shoe.minCup || 0); if (pr.shoe.toeBar) res.params.toeCrest = true; res.params.shore = '95A + 85A top'; } // v13 footwear: deep cup, raised toe bar
+  const md = pr?.shoe ? shoeData(side).md : scanModel(side);
   if (md) { res.totalContact = true; res.scanArchH = md.archH; res.notes.unshift(`Total contact: top surface = scanned plantar surface (2 mm grid, heel → toe sulcus), arch filled ${res.params.archFill ?? 100}%; clinical modifications added on top.`); }
   return res;
 }
@@ -620,6 +625,24 @@ function footModel(side) {
   modelCache[side] = { key, md }; return md;
 }
 const scanModel = side => (state.totalContact ? footModel(side) : null);
+// v13 footwear: foot model + top-of-foot envelope (scan when it has the instep, else the model foot of the same length / width / arch -> APPROX)
+const isShoe = p => !!p?.shoe;
+const synthCache = new Map();
+function synthFoot(L, W, arch, side, peak = .8) {
+  const key = [L, W, arch, side, peak].join('|'); if (synthCache.has(key)) return synthCache.get(key);
+  const o = buildFoot({ L, W, archType: arch, side, peak }); let mesh = null; o.traverse(m => { if (!mesh && m.isMesh) mesh = m; });
+  const md = deriveModel(rasterizePlantar(mesh.geometry)), v = { md, env: measureUpper(mesh.geometry, md) };
+  if (synthCache.size > 12) synthCache.clear(); synthCache.set(key, v); return v;
+}
+function shoeData(side) {
+  const f = state.feet[side];
+  if (f) { const md = footModel(side);
+    if (md && f.map && f.upper?.valid) return { md, env: f.upper, envSrc: 'scan', key: 'scan|' + f.mapId };
+    const syn = synthFoot(f.length, f.width, archOf(side), side, f.peakForefootPressure ?? .8);
+    return { md: md || syn.md, env: syn.env, envSrc: f.map ? 'estimated (scan has no top-of-foot data)' : 'model foot (no scan – APPROX)', key: [f.source, f.length, f.width, archOf(side), f.mapId || ''].join('|') }; }
+  const o = state.feet[side === 'L' ? 'R' : 'L'] || genericFoot(), syn = synthFoot(o.length, o.width, o.archType || 'normal', side);
+  return { md: syn.md, env: syn.env, envSrc: 'model foot (mirrored / generic – APPROX)', key: ['mir', o.length, o.width, o.archType, side].join('|') };
+}
 function lastLenFor(kind) { if (state.sizeMode === 'scan') return null; const a = ALLOW[kind] || ALLOW.insole; return lengthFromEU(+state.sizeMode) + a.heel + a.toe; }
 const tplKind = p => p.kind === 'insole' && !p.model; // v7 line models are always built from the scan / parametric surface (no template)
 const thickFor = p => (p.id === 'perforated' ? 2.2 : p.id === 'fullcontact' ? 3.6 : undefined);
@@ -633,11 +656,12 @@ function openingsFor(p) { const m = openingMode(p); if (!(m && state.openings.on
 const dualCache = {};
 function dualFor(side, spec = currentSpec(side)) {
   const p = ensureProduct(); if (!p.dual) return null;
-  const md = scanModel(side), model = p.id === 'diabetic' ? { ...p.model, recesses: [] } : p.model; // diabetic: the pockets are filled by the soft inserts
-  const txt = designText(), key = JSON.stringify([p.id, side, state.sizeMode, state.totalContact, spec.params, state.openings, state.feet[side]?.mapId, state.feet[side]?.length, md?.L, state.design?.size, txt, txt && engraverReady()]);
+  const shoe = isShoe(p), sd = shoe ? shoeData(side) : null;
+  const md = shoe ? sd.md : scanModel(side), model = p.id === 'diabetic' ? { ...p.model, recesses: [] } : p.model; // diabetic: the pockets are filled by the soft inserts
+  const txt = designText(), key = JSON.stringify([p.id, side, state.sizeMode, state.totalContact, spec.params, state.openings, state.feet[side]?.mapId, state.feet[side]?.length, md?.L, state.design?.size, txt, txt && engraverReady(), shoe ? [sd.key, state.heelStrap] : 0]);
   if (dualCache[side]?.key === key) return withDesignColors(dualCache[side].v);
-  let rows, lenKey, ballU, L;
-  if (md) { const s = buildContactSole(md, { params: { ...spec.params, _model: model }, kind: 'insole', zones: [], showZones: false, color: '#ffffff', lastLen: lastLenFor('insole') }); rows = s.userData.rows; lenKey = 'z'; ballU = md.ballU; L = md.L; s.geometry.dispose(); }
+  let rows, lenKey, ballU, L, frame = null;
+  if (md) { const kind = shoe ? p.kind : 'insole', s = buildContactSole(md, { params: { ...spec.params, _model: model, ...(shoe && p.shoe.type === 'sandal' ? { _notch: sandalNotch(md) } : {}) }, kind, zones: [], showZones: false, color: '#ffffff', lastLen: lastLenFor(kind) }); rows = s.userData.rows; frame = s.userData.frame; lenKey = 'z'; ballU = md.ballU; L = md.L; s.geometry.dispose(); }
   else { const d = productDims(side); ({ rows, lenKey } = printableRows(p, { L: d.L, W: d.W, params: spec.params, side, model })); ballU = .72; L = d.footL; }
   const pos = { met: { u: ballU + .005, sn: 0, ru: .045 * L, rsn: .66 }, hallux: { u: Math.min(ballU + .125, .93), sn: .5, ru: .045 * L, rsn: .3 }, arch: { u: .41, sn: .56, ru: .14 * L, rsn: .2 }, pad: { u: ballU - 15 / L, sn: .05, ru: 12, rsn: .36 } };
   let label = null; // v9: keep the base/top solid (no lattice cells or holes) under the engraved initials, so the letter floor stays >= 1.2 mm
@@ -652,13 +676,20 @@ function dualFor(side, spec = currentSpec(side)) {
       v.stats.minThicknessMm = Object.fromEntries(Object.entries(v.stats.minThicknessMm)); v.stats.engraving = r.info;
     } catch (e) { console.warn('engrave', e); v.engraving = { text: txt, error: e.message }; }
   }
+  if (shoe) { // v13: straps / clog upper / heel strap as extra printable bodies (after the engraving: initials stay on the footbed)
+    try { const parts = buildFootwear(p.shoe.type, { md, rows, frame, env: sd.env, heelStrap: state.heelStrap });
+      for (const part of parts) { const meta = p.dual.extras.find(e => e.id === part.id) || {}, src = p.dual.bodies[meta.colorFrom ?? 0];
+        v.bodies.push({ ...meta, id: part.id, name: part.name, color: src.color, colorName: src.colorName, geometry: part.geometry, printGeometry: part.printGeometry, partStats: part.stats }); v.stats.minThicknessMm[part.id] = part.stats.thicknessMm ?? part.stats.wallMm; }
+      v.stats.footwear = { envelope: sd.envSrc, parts: parts.map(x => ({ id: x.id, ...x.stats })) };
+    } catch (e) { console.warn('footwear', e); v.stats.footwear = { error: e.message }; }
+  }
   dualCache[side] = { key, v }; return withDesignColors(v);
 }
 // v9 design helpers
 const PAL = id => R.PALETTE.find(c => c.id === id) || R.PALETTE[0];
 const designText = () => cleanText(state.design?.text || '').trim();
 function designParts(p = ensureProduct()) { const d = R.DESIGN[p.id] || R.DESIGN.everyday, c = state.design?.colors || { base: d.def[0], top: d.def[1] }; return [{ part: d.parts[0], extruder: 1, ...PAL(c.base) }, { part: d.parts[1], extruder: 2, ...PAL(c.top) }]; }
-function withDesignColors(v) { if (!state.design || !v) return v; const dp = designParts(); return { ...v, bodies: v.bodies.map((b, i) => ({ ...b, color: dp[i].hex, colorName: dp[i].name })) }; }
+function withDesignColors(v) { if (!state.design || !v) return v; const dp = designParts(); return { ...v, bodies: v.bodies.map((b, i) => { const d = dp[b.colorFrom ?? i] || dp[0]; return { ...b, color: d.hex, colorName: d.name }; }) }; }
 const PRICE_KEY = 'fxPrices_v1';
 const localPrices = () => { try { return JSON.parse(localStorage.getItem(PRICE_KEY)) || {}; } catch { return {}; } };
 function priceOf(id) { const loc = localPrices(), cfg = window.FIXI_PRICES || {}; const v = loc[id] ?? cfg[id] ?? cfg.default ?? R.DEFAULT_PRICE; return Math.max(0, Math.round(+v || R.DEFAULT_PRICE)); }
@@ -671,19 +702,28 @@ function engraveSingle(geo, p) {
   try { const where = R.DESIGN[p.id]?.text || 'top', plan = planText([geo], txt, where, R.DESIGN[p.id]?.textU); if (!plan) throw new Error('text too long for the heel');
     const r = engraveBodies([geo], plan, 'cut'); return { geo: r.geos[0], info: r.info }; } catch (e) { console.warn('engrave', e); return { geo, info: { text: txt, error: e.message } }; }
 }
-function dualPrint(side) { const p = ensureProduct(), dv = dualFor(side); return dv ? { p, dv, bodies: bodiesToPrint(dv.bodies) } : null; }
+function dualPrint(side) { const p = ensureProduct(), dv = dualFor(side); if (!dv) return null;
+  if (!isShoe(p)) return { p, dv, bodies: bodiesToPrint(dv.bodies) };
+  // v13 footwear: the 2-material sole goes in the 3MF (pre-rotated to fit the bed if needed); straps / upper / heel strap = own print frames
+  const BED = BEDS[currentBed()].mm; let sole = bodiesToPrint(dv.bodies.slice(0, 2)); const fit = bedFit(sole.map(b => b.geometry), BED);
+  if (fit.angleDeg) { const g = rotateOnBed(sole.map(b => b.geometry), fit.angleDeg); sole = sole.map((b, i) => ({ ...b, geometry: g[i] })); const bb = new THREE.Box3(); sole.forEach(b => { b.geometry.computeBoundingBox(); bb.union(b.geometry.boundingBox); }); sole.forEach(b => b.geometry.translate(-(bb.min.x + bb.max.x) / 2, -(bb.min.y + bb.max.y) / 2, 0)); }
+  const extras = dv.bodies.slice(2).map(b => { const f = bedFit([b.printGeometry], BED); const g = rotateOnBed([b.printGeometry], f.angleDeg)[0]; g.computeBoundingBox(); const bb = g.boundingBox; g.translate(-(bb.min.x + bb.max.x) / 2, -(bb.min.y + bb.max.y) / 2, -bb.min.z); return { ...b, geometry: g, volumeMm3: b.partStats ? volOf(g) : 0, bed: f }; });
+  const all = [...sole, ...extras], est = all.map(b => ({ id: b.id, name: b.name, material: b.material, ...printEstimate(b.volumeMm3, surfaceArea(b.geometry), { infill: b.id === 'sole' ? .15 : 1, flow: /85A/.test(b.material) ? 1.8 : 3 }), bed: b.bed || fit }));
+  return { p, dv, bodies: all, sole, extras, bed: fit, estimate: est }; }
+function volOf(g) { const P = g.attributes.position, I = g.index.array, a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(); let v = 0; for (let i = 0; i < I.length; i += 3) { a.fromBufferAttribute(P, I[i]); b.fromBufferAttribute(P, I[i + 1]); c.fromBufferAttribute(P, I[i + 2]); v += a.dot(b.cross(c)) / 6; } return Math.round(Math.abs(v)); }
 function build3mfFor(side, id) {
-  const r = dualPrint(side); if (!r) return null; const { p, dv, bodies } = r;
+  const r = dualPrint(side); if (!r) return null; const { p, dv } = r, bodies = r.sole || r.bodies;
   const meta = { title: `${p.name} – ${sideName(side)} foot (${id})`, description: `${p.dual.look}. Two bodies assembled in place; extruder 1 = ${bodies[0].colorName} ${bodies[0].material}, extruder 2 = ${bodies[1].colorName} ${bodies[1].material}. Scan-fitted (Fixifoot).`,
-    print: { model: p.name, orderId: id, side: sideName(side), ...(state.design ? { design: designSummary() } : {}), ...(dv.engraving ? { engraving: dv.engraving } : {}), ...p.print, base: `Extruder 1 – ${bodies[0].colorName} ${bodies[0].material} (${bodies[0].name})`, top: `Extruder 2 – ${bodies[1].colorName} ${bodies[1].material} (${bodies[1].name})`, singleMaterialProfile: { base: p.print?.base, top: p.print?.top }, dualMaterial: { look: p.dual.look, bodies: bodies.map(b => ({ name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill, volumeCm3: +(b.volumeMm3 / 1000).toFixed(1) })), interface: 'shared surface – no gap / overlap', stats: dv.stats } } };
-  return { name: `${id}-${p.id}-2material-${sideName(side).toLowerCase()}${NEEDS_SCAN_SRC.includes(state.feet[side]?.source) ? '-APPROX' : ''}.3mf`, data: build3MF(bodies, meta), bodies, stats: dv.stats };
+    print: { model: p.name, orderId: id, side: sideName(side), ...(r.sole ? { footwear: { approx: NEEDS_SCAN_SRC.includes(state.feet[side]?.source) || !state.feet[side], envelope: dv.stats.footwear?.envelope, solePlacement: r.bed, separateParts: r.extras.map(b => ({ id: b.id, name: b.name, material: b.material, colorName: b.colorName, extruder: b.extruder, file: 'separate STL', bed: b.bed, ...b.partStats })), printTimeEstimate: r.estimate } } : {}), ...(state.design ? { design: designSummary() } : {}), ...(dv.engraving ? { engraving: dv.engraving } : {}), ...p.print, base: `Extruder 1 – ${bodies[0].colorName} ${bodies[0].material} (${bodies[0].name})`, top: `Extruder 2 – ${bodies[1].colorName} ${bodies[1].material} (${bodies[1].name})`, singleMaterialProfile: { base: p.print?.base, top: p.print?.top }, dualMaterial: { look: p.dual.look, bodies: bodies.map(b => ({ name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill, volumeCm3: +(b.volumeMm3 / 1000).toFixed(1) })), interface: 'shared surface – no gap / overlap', stats: dv.stats } } };
+  return { name: `${id}-${p.id}-2material-${sideName(side).toLowerCase()}${NEEDS_SCAN_SRC.includes(state.feet[side]?.source) ? '-APPROX' : ''}.3mf`, data: build3MF(bodies, meta), bodies, stats: dv.stats, bed: r.bed, estimate: r.estimate, extras: r.extras };
 }
-function bodyStls(side, id) { const r = dualPrint(side); if (!r) return []; return r.bodies.map(b => ({ name: `${id}-${r.p.id}-${b.id}-${b.colorName.toLowerCase().replace(/[^a-z]+/g, '-')}-ext${b.extruder}-${sideName(side).toLowerCase()}.stl`, data: new STLExporter().parse(new THREE.Mesh(b.geometry), { binary: true }) })); }
+function bodyStls(side, id) { const r = dualPrint(side); if (!r) return []; const ap = NEEDS_SCAN_SRC.includes(state.feet[side]?.source) ? '-APPROX' : ''; return r.bodies.map(b => ({ name: `${id}-${r.p.id}-${b.id}-${b.colorName.toLowerCase().replace(/[^a-z]+/g, '-')}-ext${b.extruder}-${sideName(side).toLowerCase()}${ap}.stl`, data: new STLExporter().parse(new THREE.Mesh(b.geometry), { binary: true }) })); }
 const creasedCache = new WeakMap();
 function creased(geo) { let c = creasedCache.get(geo); if (!c) { c = toCreasedNormals(geo, Math.PI / 5); creasedCache.set(geo, c); } return c.clone(); }
 function productObject(side, spec, { display = true, zonesOn = state.showZones, openings = display } = {}) {
   const p = ensureProduct(), md = scanModel(side), useTpl = state.base && tplKind(p) && templateCache[state.base];
-  if (display && p.dual && state.twoMat) { const dv = dualFor(side, spec); if (dv) { const g = new THREE.Group(); dv.bodies.forEach(b => { const m = new THREE.Mesh(dv.engraving && !dv.engraving.error && !dv.engraving.pending ? creased(b.geometry) : b.geometry.clone(), new THREE.MeshStandardMaterial({ color: b.color, roughness: .5, metalness: 0, side: THREE.DoubleSide })); m.name = b.id; g.add(m); }); g.userData.dual = dv.stats; return g; } }
+  if (isShoe(p) && !display) { const sd = shoeData(side); return buildContactSole(sd.md, { params: { ...spec.params, ...(p.shoe.type === 'sandal' ? { _notch: sandalNotch(sd.md) } : {}) }, kind: p.kind, zones: [], showZones: false, color: state.color, lastLen: lastLenFor(p.kind) }); }
+  if (display && p.dual && (state.twoMat || isShoe(p))) { const dv = dualFor(side, spec); if (dv) { const g = new THREE.Group(); dv.bodies.forEach(b => { const m = new THREE.Mesh(dv.engraving && !dv.engraving.error && !dv.engraving.pending ? creased(b.geometry) : b.geometry.clone(), new THREE.MeshStandardMaterial({ color: b.color, roughness: .5, metalness: 0, side: THREE.DoubleSide })); m.name = b.id; g.add(m); }); g.userData.dual = dv.stats; return g; } }
   const op = openings ? openingsFor(p) : null;
   const integ = p.kind === 'insole' || state.integrate;
   const z = { zones: display ? spec.zones : [], showZones: display && zonesOn, highlight: display ? state.highlight : null };
@@ -739,7 +779,7 @@ function renderResult(keepView = true) {
   $('#sizeSel').value = state.sizeMode;
   $('#dimsNote').textContent = `Print outline: ${dims.L} × ${dims.W} mm (foot length + ${dims.L - dims.footL} mm allowance).`;
   $('#archOverride2').value = archOf(f.side);
-  $('#integrateWrap').classList.toggle('hidden', p.kind === 'insole');
+  $('#integrateWrap').classList.toggle('hidden', p.kind === 'insole' || isShoe(p));
   productViewer ||= new Viewer($('#productViewer'));
   const useTpl = state.base && tplKind(p) && templateCache[state.base];
   $('#templateSel').disabled = !tplKind(p);
@@ -791,7 +831,7 @@ function priceLines(spec) {
   if (state.design) return [[p.name + ' (pair) – your design', priceOf(p.id)]]; // v9: one price per product (₱9,999 for now), add-ons included
   const addons = [pp.metPad && 'Metatarsal pad', pp.heelLift && 'Heel lift', pp.mortonExtension && "Morton's extension", pp.lateralFlange && 'Lateral flange', pp.toeCrest && 'Toe crest', pp.sesamoidCutout && "Dancer's pad", pp.offloadPockets && 'Offloading pockets', pp.dualDensity && 'Dual density'].filter(Boolean);
   const lines = [[p.name + ' (pair)', p.examplePrice], ...addons.map(a => [a, R.ADDON_EXAMPLE_PRICE])];
-  if (p.kind !== 'insole' && state.integrate) lines.push(['Custom footbed built into sole', 300]);
+  if (p.kind !== 'insole' && !isShoe(p) && state.integrate) lines.push(['Custom footbed built into sole', 300]);
   return lines;
 }
 function renderOrder() {
@@ -815,10 +855,10 @@ function download(name, data, type) { const a = document.createElement('a'); a.h
 const newOrderId = () => 'FXF-' + Date.now().toString(36).toUpperCase();
 function ensureProduct() { if (!state.product) { state.product = R.PRODUCTS.find(x => x.id === 'fullcontact'); state.color = state.product.colors[0]; } return state.product; }
 function buildStl(side, id) {
-  const p = ensureProduct(), sp = currentSpec(side), md = scanModel(side);
+  const p = ensureProduct(), sp = currentSpec(side), md = isShoe(p) ? shoeData(side).md : scanModel(side);
   const useTpl = !!(state.base && tplKind(p) && templateCache[state.base]);
   const name = `${id}-${p.id}-${p.kind === 'insole' ? 'insole' : 'sole'}-${sideName(side).toLowerCase()}${NEEDS_SCAN_SRC.includes(state.feet[side]?.source) ? '-APPROX' : ''}.stl`;
-  if (md && (useTpl || p.kind === 'insole' || state.integrate)) {
+  if (md && (useTpl || p.kind === 'insole' || state.integrate || isShoe(p))) {
     // scan-accurate path: total-contact sole / morphed template, converted to Z-up, Z=0, outward normals
     const obj = productObject(side, sp, { display: false, openings: true }), A = obj.userData?.anchors;
     const pts = A && p.kind === 'flipflop' ? [A.post, A.endM, A.endL] : A && p.kind === 'slide' ? [A.endM, A.endL] : [];
@@ -856,12 +896,13 @@ function buildSpec(id, stlInfos = []) {
     examplePrice: { currency: 'PHP', lines, total: lines.reduce((s, l) => s + l[1], 0), note: state.design ? 'product price (configurable per product)' : 'estimate' },
     design: state.design ? designSummary() : null,
     price: { currency: 'PHP', amount: lines.reduce((s, l) => s + l[1], 0), perProduct: state.design ? priceOf(p.id) : null },
+    footwear: isShoe(p) ? Object.fromEntries(Object.keys(state.feet).map(s => { const r = dualPrint(s); return [sideName(s), r ? { envelope: r.dv.stats.footwear?.envelope, solePlacement: r.bed, parts: r.dv.stats.footwear?.parts, printTimeEstimate: r.estimate } : null]; })) : undefined,
     dualMaterial: p.dual ? { look: p.dual.look, bodies: p.dual.bodies.map(b => ({ id: b.id, name: b.name, material: b.material, color: b.color, colorName: b.colorName, extruder: b.extruder, infill: b.infill })), files: '2-material 3MF (both bodies assembled in place) + one STL per body; single-STL export kept' } : null,
     print: p.print ? { model: p.name, ...p.print, printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Verify in the slicer before printing' } : { material: 'TPU ' + spec.params.shore, infill: spec.params.infill, walls: 3, nozzleTempC: '220-235', printer: 'e.g. Creality K1C (220×220 bed – place insole diagonally)', note: 'Verify in the slicer before printing' },
     model: p.model ? { id: p.id, name: p.name, tagline: p.tagline, geometry: { ...p.model, recesses: (p.model.recesses || []).map(r => ({ ...r })) }, forcedParams: p.params, smoothToes: true } : null,
     recommended: recommendNow(),
     stlFiles: stlInfos,
-    stlNotes: [p.kind === 'flipflop' ? 'STL = sole/footbed only. Strap and toe post are separate parts.' : p.kind === 'slide' ? 'STL = sole/footbed only. Lattice upper is a separate part.' : 'STL = full insole solid.',
+    stlNotes: [isShoe(p) ? `STL = complete scan-fitted sole (one piece). Production files: 2-material 3MF (95A base + 85A top) + one STL per body (${p.dual.extras.map(e => e.name).join(', ')}).` : p.kind === 'flipflop' ? 'STL = sole/footbed only. Strap and toe post are separate parts.' : p.kind === 'slide' ? 'STL = sole/footbed only. Lattice upper is a separate part.' : 'STL = full insole solid.',
       openingMode(p) && openingsFor(p) && !(state.base && tplKind(p)) ? (openingMode(p) === 'holes' ? `Ventilation holes are REAL through-holes in the STL (Ø ${state.openings.d || 3.5} mm, ${OPENING_PRESETS.holes[state.openings.density].label}); heel cup, arch support and edge margin kept solid.` : `Lattice openings are REAL through-openings in the sole STL (${OPENING_PRESETS.lattice[state.openings.density].label}); solid rim and strap-anchor areas.`) : openingMode(p) ? (state.base && tplKind(p) ? 'Template base selected: ventilation holes are not cut into template models – use the parametric / scan sole for real holes.' : 'Openings switched off by staff: solid sole.') : null, state.base ? 'Template-based STL keeps the curved bottom of the original Fixifoot model.' : 'Parametric STL has a flat bottom on Z=0.'].filter(Boolean),
     disclaimer: 'Comfort product, not a medical diagnosis. See a podiatrist for diabetes or pain.' };
 }
@@ -1029,8 +1070,19 @@ function renderStaff(keepView = true) {
   if (p.dual) { const dv = dualFor(side, spec); $('#dualInfo').innerHTML = dv ? `<p><b>${esc(p.dual.look)}</b></p><table class="params">${p.dual.bodies.map(b => `<tr><td><span class="sw" style="background:${b.color};width:14px;height:14px;display:inline-block;vertical-align:middle"></span> Extruder ${b.extruder}</td><td>${esc(b.name)} – ${esc(b.material)} (${esc(b.colorName)}), infill ${esc(b.infill)}</td></tr>`).join('')}
     <tr><td>Interface</td><td>shared surface – no gap / overlap; both bodies watertight</td></tr><tr><td>Features</td><td>${dv.stats.openings ? dv.stats.openings + ' ' + (dv.stats.tilesMode === 'holes' ? 'holes' : 'windows/cells') : ''}${dv.stats.inserts.length ? dv.stats.inserts.map(i => esc(i.label)).join(', ') : ''}${!dv.stats.openings && !dv.stats.inserts.length ? 'layered' : ''}</td></tr>
     <tr><td>Min thickness</td><td>${Object.entries(dv.stats.minThicknessMm).map(([k, v]) => k + ' ' + v + ' mm').join(' · ')}</td></tr></table>${p.actual ? `<figure class="print-prev"><img src="${p.actual}" alt="2-material print preview"><figcaption class="tiny muted">2-material preview rendered from the actual print files</figcaption></figure>` : ''}` : ''; }
+  if (isShoe(p)) { try { const r = dualPrint(side), fw = r?.dv.stats.footwear || {}, ap = needsScanFeet() || !state.feet[side] || /APPROX/.test(fw.envelope || '');
+    const bedTxt = b => { const bs = b.bedMm.slice(0, 2).join('×'); return `${b.footprintMm.join(' × ')} × ${b.heightMm} mm · ${b.fits ? `fits ${bs}${b.angleDeg ? ' rotated ' + b.angleDeg + '°' : ''}` : b.fitsTight ? `⚠️ tight on ${bs}: only ${b.edgeMm} mm to the edge${b.angleDeg ? ' (rotated ' + b.angleDeg + '°)' : ''}, use a 256+ bed or check the slicer` : `⚠️ does NOT fit ${b.bedMm.join('×')}`}`; };
+    $('#dualInfo').innerHTML += `<table class="params"><tr><td colspan="2"><b>Footwear parts (${sideName(side)})</b>${ap ? ' <span class="tag">APPROX</span>' : ''}</td></tr>
+      ${r.extras.map(b => `<tr><td><span class="sw" style="background:${b.color};width:14px;height:14px;display:inline-block;vertical-align:middle"></span> ${esc(b.name)}</td><td>${esc(b.material)} (${esc(b.colorName)}) · ${esc(b.partStats?.orientation || '')} · ${bedTxt(b.bed)}</td></tr>`).join('')}
+      <tr><td>Sole (3MF)</td><td>${bedTxt(r.bed)}</td></tr><tr><td>Instep / toe-box data</td><td>${esc(fw.envelope || '–')}</td></tr>
+      <tr><td>Rough print time</td><td>${r.estimate.map(e => `${esc(e.name.replace(/ \(.*\)/, ''))} ~${e.hours} h / ${e.filamentG} g`).join(' · ')}</td></tr></table>
+      <label style="display:block;margin:6px 0">Printer bed <select id="bedSel">${Object.entries(BEDS).map(([k, v]) => `<option value="${k}" ${k === currentBed() ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+      ${p.shoe.type === 'clog' ? `<label class="switch"><input type="checkbox" id="heelStrapChk" ${state.heelStrap ? 'checked' : ''}> Heel strap (pivots on two printed pins)</label>` : ''}`;
+    const bsl = $('#bedSel'); if (bsl) bsl.onchange = e => { try { localStorage.setItem('fxBed', e.target.value); } catch (er) {} renderStaff(); };
+    const hc = $('#heelStrapChk'); if (hc) hc.onchange = e => { state.heelStrap = e.target.checked; renderStaff(); };
+  } catch (e) { console.warn('footwear card', e); } }
   $('#dlStlL').textContent = `⬇ Download STL – Left${state.feet.L ? '' : ' (mirrored)'}`; $('#dlStlR').textContent = `⬇ Download STL – Right${state.feet.R ? '' : ' (mirrored)'}`;
-  $('#dlNote').textContent = needsScanFeet() ? 'Built from measurements (no 3D scan): the sole follows a typical foot of this length, width and arch – approximate fit. Watertight, mm, Z-up, flat bottom on Z=0.' : (spec.totalContact ? (useTpl ? `Template ${state.base} morphed to the scan (non-uniform warp + top conformed to the plantar map): watertight, mm, Z-up, Z=0 bottom.` : 'Total contact from the 2 mm plantar map: watertight, mm, Z-up, flat bottom on Z=0.') : useTpl ? `Template ${state.base}: watertight, mm, Z-up, curved bottom like the original.` : 'Parametric: watertight, mm, Z-up, flat bottom on Z=0.') + (p.kind !== 'insole' ? ' Sole only – strap/upper separate.' : '');
+  $('#dlNote').textContent = needsScanFeet() ? 'Built from measurements (no 3D scan): the sole follows a typical foot of this length, width and arch – approximate fit. Watertight, mm, Z-up, flat bottom on Z=0.' : (spec.totalContact ? (useTpl ? `Template ${state.base} morphed to the scan (non-uniform warp + top conformed to the plantar map): watertight, mm, Z-up, Z=0 bottom.` : 'Total contact from the 2 mm plantar map: watertight, mm, Z-up, flat bottom on Z=0.') : useTpl ? `Template ${state.base}: watertight, mm, Z-up, curved bottom like the original.` : 'Parametric: watertight, mm, Z-up, flat bottom on Z=0.') + (isShoe(p) ? ' STL = one-piece sole; straps / upper / heel strap are in “Body STLs”, the 95A + 85A sole in the 3MF.' : p.kind !== 'insole' ? ' Sole only – strap/upper separate.' : '');
 }
 $('#tcChk').onchange = e => { state.totalContact = e.target.checked; renderStaff(); toast(state.totalContact ? 'Total contact ON – follows the scanned sole' : 'Total contact OFF – parametric arch'); };
 $('#afRange').oninput = e => { state.archFill = +e.target.value; renderStaff(); };
@@ -1160,7 +1212,7 @@ function snapshot() {
   return {
     feet: JSON.parse(JSON.stringify(state.feet)), archOverride: { ...state.archOverride }, fitOver: JSON.parse(JSON.stringify(state.fitOver || {})), qa: JSON.parse(JSON.stringify(state.qa)), lld: { mm: state.answers.lldMm, side: state.answers.lldSide },
     staffAdds: [...state.staffAdds], staffRemoves: [...state.staffRemoves], conditions: [...state.conditions],
-    settings: { fitOver: JSON.parse(JSON.stringify(state.fitOver || {})), design: state.design ? JSON.parse(JSON.stringify(state.design)) : null, productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact, openings: { ...state.openings },
+    settings: { fitOver: JSON.parse(JSON.stringify(state.fitOver || {})), design: state.design ? JSON.parse(JSON.stringify(state.design)) : null, productId: state.product?.id || null, color: state.color, strapColor: state.strapColor || null, base: state.base, sizeMode: state.sizeMode, integrate: state.integrate, totalContact: state.totalContact, openings: { ...state.openings }, heelStrap: state.heelStrap,
       perFoot: Object.fromEntries(Object.entries(sp).map(([s, x]) => [s, { archType: x.archType, archHeight: x.params.archHeight, heelCupDepth: x.params.heelCupDepth, medialPost: x.params.medialPost, lateralWedge: x.params.lateralWedge, heelLift: x.params.heelLift, metPad: x.params.metPad, shore: x.params.shore }])) }
   };
 }
@@ -1197,7 +1249,7 @@ function loadCustomer(c) {
   if (c.lld) { state.answers.lldMm = c.lld.mm; state.answers.lldSide = c.lld.side; }
   const s = c.settings || {}; state.product = R.PRODUCTS.find(x => x.id === s.productId) || null; state.color = s.color || state.product?.colors[0]; state.strapColor = s.strapColor || state.product?.strapColors?.[0];
   state.design = s.design ? JSON.parse(JSON.stringify(s.design)) : null; if (state.design) applyDesign();
-  state.base = s.base || ''; state.sizeMode = s.sizeMode || 'scan'; state.integrate = s.integrate !== false; state.totalContact = s.totalContact !== false; state.openings = { on: true, density: 'med', d: 3.5, ...(s.openings || {}) };
+  state.base = s.base || ''; state.sizeMode = s.sizeMode || 'scan'; state.integrate = s.integrate !== false; state.heelStrap = s.heelStrap !== false; state.totalContact = s.totalContact !== false; state.openings = { on: true, density: 'med', d: 3.5, ...(s.openings || {}) };
   state.customerId = c.id; state.side = state.feet.R ? 'R' : 'L'; staffOrderId = null; recompute();
 }
 // v10: no fake customers in production; remove the old v1–v9 sample customers (C-DEMO*) from this device once
@@ -1637,6 +1689,7 @@ function renderDesign(keepView = true) {
   const ds = state.design; if (!ds) return; const p = ensureProduct(), d = R.DESIGN[p.id];
   $('#dzTitle').textContent = p.name; $('#dzTag').textContent = p.tagline || ''; $('#dzPrice').textContent = peso(priceOf(p.id));
   renderDesignRows($('#dzRows'), () => renderDesign(true));
+  if (p.shoe?.type === 'clog') { $('#dzRows').insertAdjacentHTML('beforeend', `<label class="switch dz-row"><input type="checkbox" id="dzHeelStrap" ${state.heelStrap ? 'checked' : ''}> <b>Heel strap</b> <span class="muted">· pivots up or down</span></label>`); $('#dzHeelStrap').onchange = e => { state.heelStrap = e.target.checked; renderDesign(true); }; }
   designViewer ||= new Viewer($('#designViewer'));
   const obj = productObject('R', currentSpec('R'), { zonesOn: false });
   designViewer.set(obj, keepView && !!designViewer.obj);
@@ -1653,7 +1706,7 @@ $('#dzText').oninput = e => { const v = cleanText(e.target.value); if (e.target.
 $('#dzSize').onchange = e => { state.design.size = e.target.value; state.sizeMode = e.target.value || 'scan'; renderDesign(true); };
 $('#dzNext').onclick = () => { try { state.design.snapshot = designViewer?.renderer.domElement.toDataURL('image/jpeg', .85); } catch { } show('s-summary'); };
 function designSummary() {
-  const ds = state.design, p = ensureProduct(), dp = designParts(p), mats = p.dual ? p.dual.bodies.map(b => b.material) : p.kind === 'insole' ? ['TPU 90A', '–'] : ['TPU 95A (sole)', 'TPU 85A (' + (p.kind === 'slide' ? 'upper' : 'strap') + ')'];
+  const ds = state.design, p = ensureProduct(), dp = designParts(p), mats = p.dual ? p.dual.bodies.map((b, i) => b.material + (isShoe(p) ? ' + ' + p.dual.extras.filter(e => (e.colorFrom ?? 0) === i).map(e => e.name.toLowerCase() + ' ' + e.material).join(', ') : '')).map(t => t.replace(/ \+ $/, '')) : p.kind === 'insole' ? ['TPU 90A', '–'] : ['TPU 95A (sole)', 'TPU 85A (' + (p.kind === 'slide' ? 'upper' : 'strap') + ')'];
   const eg = engravingNow(), txt = designText();
   return { productId: p.id, product: p.name, chosenBeforeScan: true, changedBy: ds.changedBy || 'customer', keptSuggestion: ds.keptSuggestion || null,
     colors: { extruder1: { part: dp[0].part, id: dp[0].id, name: dp[0].name, hex: dp[0].hex, material: mats[0] }, extruder2: { part: dp[1].part, id: dp[1].id, name: dp[1].name, hex: dp[1].hex, material: mats[1] } },
@@ -1795,7 +1848,7 @@ if (qp.get('demo') && testHooks) {
   recompute();
   if (qp.get('product')) { state.product = R.PRODUCTS.find(p => p.id === qp.get('product')); state.color = state.product?.colors[0]; state.strapColor = state.product?.strapColors?.[0]; }
 }
-window.__fixiFit = { alignScan, rasterizePlantar, deriveModel, buildContactSole, morphTemplate, toPrintable, fitCheck, buildFoot, STLLoader, OBJLoader, STLExporter, THREE, loadTemplate, templateCache, footModel, fitFor, buildStl, state, objToGeo, currentSpec, fittingFor, productObject, scanModel, renderStaff };
+window.__fixiFit = { alignScan, rasterizePlantar, deriveModel, buildContactSole, morphTemplate, toPrintable, fitCheck, buildFoot, STLLoader, OBJLoader, STLExporter, THREE, loadTemplate, templateCache, footModel, fitFor, buildStl, state, objToGeo, currentSpec, fittingFor, productObject, scanModel, renderStaff, applyAligned, objToGeo, manualFoot, dualFor, dualPrint, build3mfFor, bodyStls, shoeData, startDesign, R, show: id => show(id), renderDesign };
 seedCRM();
 // v5 cloud init: no keys in config.js -> offline mode (PIN + on-device CRM); v10: PIN only when the cloud is unreachable
 if (Cloud.configured) initCloud().then(() => {

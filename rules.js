@@ -495,6 +495,27 @@
       desc: 'Thong flip-flop whose footbed is a full-contact copy of your scanned sole.', colors: ['#ff7a1a', '#1f2a30', '#0099ff', '#3a3f3a'], strapColors: ['#ff7a1a', '#f4f6f6', '#1f2a30', '#d8c6a8'], examplePrice: 2990 },
     { id: 'slide', name: 'Fixifoot Lattice Slide', tagline: 'Light, airy honeycomb slide', kind: 'slide', image: 'catalog/slide-hero.jpg', photo: 'assets/slide-lattice.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan',
       desc: '3D-printed honeycomb mesh slide. Light, airy, washable.', colors: ['#f4f6f6', '#f26b1d', '#1f2a30', '#1aa7d8'], examplePrice: 3490 },
+    /* v13 footwear: scan-fitted 2-material sole (95A base + 85A top) + separate printed straps / upper (footwear.js) */
+    { id: 'twostrap', name: 'Fixifoot Contour Two-Strap', tagline: 'Deep heel cup, toe bar, two wide straps', kind: 'sandal', image: 'catalog/twostrap-hero.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan',
+      desc: 'Two-strap sandal on a contoured footbed shaped from your scan: deep heel cup, raised toe bar and your arch support. Firm 95A sole, soft 85A top layer, two wide straps sized to your forefoot and instep.',
+      colors: ['#6b4f3a', '#1c1f24', '#dcb48c', '#0099ff'], examplePrice: 9999,
+      shoe: { type: 'sandal', toeBar: true, minCup: 16, summary: 'scan-fitted footbed (deep 16+ mm heel cup, raised toe bar) on a 13–18 mm sole; 2 straps arched over the scanned foot' },
+      dual: { id: 'twostrap', type: 'layer', topT: 2.5, look: 'firm 95A sole + soft 85A footbed top layer; straps in the top colour',
+        bodies: [{ id: 'sole', name: 'Two-Strap sole (base)', material: 'TPU 95A', color: '#1c1f24', colorName: 'Black', extruder: 1, infill: 'gyroid 15%' }, { id: 'top', name: 'Two-Strap soft footbed top layer', material: 'TPU 85A', color: '#dcb48c', colorName: 'Beige / nude', extruder: 2, infill: '100% (solid top layer)' }],
+        extras: [{ id: 'strapFront', name: 'Front strap (forefoot)', material: 'TPU 85A', colorFrom: 1, extruder: 2, infill: '100% (solid)' }, { id: 'strapRear', name: 'Rear strap (instep)', material: 'TPU 85A', colorFrom: 1, extruder: 2, infill: '100% (solid)' }] },
+      print: { base: 'TPU 95A sole', top: 'TPU 85A footbed top layer 2.5 mm (dual extruder / tool changer)', pattern: 'gyroid', infill: '15%', walls: 3, topLayers: 5, bottomLayers: 4, layer: '0.2 mm',
+        zones: [{ zone: 'Straps', infill: 'solid TPU 85A, printed on edge', why: 'soft, strong, no supports' }, { zone: 'Strap notches', infill: '1.6 mm recess in the sole side', why: 'locates the strap ends for bonding' }],
+        nozzleC: '225-235', bedC: '45-50', speed: '25-35 mm/s', notes: 'Sole flat on the bed (2-material 3MF). Straps printed separately on edge, then bonded into the side notches with flexible TPU / PU adhesive or heat-welded.' } },
+    { id: 'clog', name: 'Fixifoot Comfort Clog', tagline: 'Roomy toe box, honeycomb vents', kind: 'clog', image: 'catalog/clog-hero.jpg', illustration: true, illusCap: 'Illustration – your product is custom-made from your scan',
+      desc: 'Roomy closed clog on a footbed shaped from your scan. Honeycomb vents on top, optional pivoting heel strap. Firm 95A sole and shell, soft 85A top layer.',
+      colors: ['#0099ff', '#1c1f24', '#6b7b3a', '#f3f5f7'], examplePrice: 9999,
+      shoe: { type: 'clog', toeBar: false, minCup: 14, heelStrap: true, summary: 'scan-fitted footbed (14+ mm heel cup) on a 13–18 mm sole; upper sized from the scan with ~7 mm toe room and 7 mm over the toes' },
+      dual: { id: 'clog', type: 'layer', topT: 2.5, look: 'firm 95A sole + shell, soft 85A footbed top layer; heel strap in the top colour',
+        bodies: [{ id: 'sole', name: 'Clog sole (base)', material: 'TPU 95A', color: '#0099ff', colorName: 'Fixifoot Blue', extruder: 1, infill: 'gyroid 15%' }, { id: 'top', name: 'Clog soft footbed top layer', material: 'TPU 85A', color: '#f3f5f7', colorName: 'White', extruder: 2, infill: '100% (solid top layer)' }],
+        extras: [{ id: 'upper', name: 'Clog upper (toe box)', material: 'TPU 95A', colorFrom: 0, extruder: 1, infill: '100% (2.8 mm wall, 4 perimeters)' }, { id: 'heelStrap', name: 'Heel strap', material: 'TPU 85A', colorFrom: 1, extruder: 2, infill: '100% (solid)' }] },
+      print: { base: 'TPU 95A sole + upper', top: 'TPU 85A footbed top layer 2.5 mm (dual extruder / tool changer)', pattern: 'gyroid', infill: '15%', walls: 3, topLayers: 5, bottomLayers: 4, layer: '0.2 mm',
+        zones: [{ zone: 'Upper', infill: 'solid 2.8 mm shell', why: 'keeps the toe box shape' }, { zone: 'Vents', infill: 'real hexagonal through-openings', why: 'airflow' }],
+        nozzleC: '225-235', bedC: '45-50', speed: '25-35 mm/s', notes: 'Sole flat on the bed (2-material 3MF). Upper upright, rim down, organic supports under the roof only; bond the upper rim around the sole side wall. Heel strap on edge, press onto the two pins.' } },
     { id: 'fullcontact', name: 'Full-contact TPU insole', kind: 'insole', image: 'assets/insole-fullcontact.jpg',
       desc: 'Full-length TPU insole with sculpted arch support.', colors: ['#c8784a', '#d9a066', '#1f2a30', '#0099ff'], examplePrice: 2790 },
     /* v7 insole line – every model is built on the smooth-toe (v6.1) scan surface. `model` = real geometry differences (used by fit.js /
@@ -575,14 +596,14 @@
     { id: 'blue', name: 'Fixifoot Blue', hex: '#0099ff' }, { id: 'lightblue', name: 'Light blue', hex: '#9fd3ff' }, { id: 'orange', name: 'Orange', hex: '#ff7a1a' },
     { id: 'yellow', name: 'Yellow', hex: '#ffd22e' }, { id: 'olive', name: 'Olive', hex: '#6b7b3a' }, { id: 'beige', name: 'Beige / nude', hex: '#dcb48c' },
     { id: 'red', name: 'Red', hex: '#d7263d' }, { id: 'pink', name: 'Pink', hex: '#ff8fb8' }, { id: 'purple', name: 'Purple', hex: '#7b4fc9' }];
-  // customer catalog (9 products): 6 insoles + 3 sandals. Labels = what extruder 1 / 2 print on this product.
-  const CATALOG = ['everyday', 'sport', 'work', 'diabetic', 'dress', 'kids', 'flipflop', 'flipflop_scan', 'slide'];
+  // customer catalog (11 products): 6 insoles + 3 sandals + 2 footwear (v13). Labels = what extruder 1 / 2 print on this product.
+  const CATALOG = ['everyday', 'sport', 'work', 'diabetic', 'dress', 'kids', 'flipflop', 'flipflop_scan', 'slide', 'twostrap', 'clog']; // v13: + 2 footwear models
   const DESIGN = {
     sport: { parts: ['Base', 'Top layer'], def: ['black', 'blue'], text: 'top' }, everyday: { parts: ['Base', 'Top layer'], def: ['white', 'lightblue'], text: 'top' },
     diabetic: { parts: ['Soft base', 'Extra-soft inserts'], def: ['white', 'lightblue'], text: 'bottom' }, work: { parts: ['Shell', 'Honeycomb cushions'], def: ['grey', 'yellow'], text: 'top', textU: .38 },
     dress: { parts: ['Body', 'Ball-of-foot pad'], def: ['beige', 'white'], text: 'top' }, kids: { parts: ['Base', 'Top layer'], def: ['orange', 'blue'], text: 'top' },
     flipflop: { parts: ['Sole', 'Strap'], def: ['olive', 'beige'], text: 'top' }, flipflop_scan: { parts: ['Sole', 'Strap'], def: ['orange', 'orange'], text: 'top' },
-    slide: { parts: ['Sole', 'Lattice upper'], def: ['orange', 'orange'], text: 'top' }, perforated: { parts: ['Insole', '–'], def: ['white', 'white'], text: 'top' }, fullcontact: { parts: ['Insole', '–'], def: ['beige', 'beige'], text: 'top' } };
+    slide: { parts: ['Sole', 'Lattice upper'], def: ['orange', 'orange'], text: 'top' }, twostrap: { parts: ['Sole (95A)', 'Footbed top & straps (85A)'], def: ['black', 'beige'], text: 'top' }, clog: { parts: ['Sole & shell (95A)', 'Footbed top & heel strap (85A)'], def: ['blue', 'white'], text: 'top' }, perforated: { parts: ['Insole', '–'], def: ['white', 'white'], text: 'top' }, fullcontact: { parts: ['Insole', '–'], def: ['beige', 'beige'], text: 'top' } };
   const DEFAULT_PRICE = 9999; // PHP, every product for now – override per product in config.js (window.FIXI_PRICES) or staff settings
   global.FixiRules = { PALETTE, CATALOG, DESIGN, DEFAULT_PRICE, rationale, REFS, FRIENDLY, ARCH_FRIENDLY, ARCH_FRIENDLY_TEXT, QUESTIONS, conditionsFromQA, benefits, ARCH_TYPES, ZONES, CONDITIONS, PRODUCTS, recommendProduct, ADDON_EXAMPLE_PRICE, SHORE_ORDER, combine, autoConditionsFromAnswers, suggestFromScan };
 })(window);

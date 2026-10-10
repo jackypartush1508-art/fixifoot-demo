@@ -12,7 +12,7 @@ const d2seg = (px, py, ax, ay, bx, by) => { const dx = bx - ax, dy = by - ay, t 
 /* ---------- 1. one shared 2D plan ---------- */
 // S(ui, sn) -> { x, l, tz, bz, u }.  o = { mode: 'holes'|'lattice'|null, density, d, allow(u, sn), rimMargin, extras: [{ id, u, sn, ru (mm), rs (mm), n }] }
 export function planSplit(S, o = {}) {
-  const mode = o.mode || null, pr = mode ? { ...(OPENING_PRESETS[mode][o.density] || OPENING_PRESETS[mode].med) } : { pitch: 8 };
+  const mode = o.mode || null, pr = mode ? { ...(OPENING_PRESETS[mode][o.density] || OPENING_PRESETS[mode].med), ...(o.preset || {}) } : { pitch: 8 }; // v13: o.preset = custom cell / wall (clog vents)
   if (mode === 'holes' && o.d) { pr.d = clamp(+o.d, 2, 5); pr.pitch = Math.max(pr.pitch, pr.d + 2.2); }
   const wall = Math.max(MIN_WALL, mode === 'lattice' ? pr.wall : (o.wall ?? 1.6)), rim = o.rimMargin ?? (mode === 'lattice' ? 7 : 5);
   const allow = o.allow || (() => true);

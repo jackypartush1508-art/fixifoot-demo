@@ -11,6 +11,7 @@ Static web app (no build step). Serve the folder and open on a phone:
 - rules.js     – EDIT ME: arch types, 21 foot problems -> insole changes, questionnaire, friendly wording, products, example prices
 - geometry.js  – procedural foot, insole/sole/flip-flop/slide geometry, printable STL builder, template adaptation
 - receipt.js   – v10 PDF receipt (jsPDF, vendored in vendor/jspdf.umd.min.js; DejaVu Sans subset in vendor/fonts/receipt-fonts.js)
+- footwear.js  – v13 sandal straps, clog upper + heel strap, bed fit / print-time estimate
 - engrave.js   – v9 initials engraving as real geometry (manifold-3d booleans, lazy-loaded)
 - vendor/      – three.js r160 (vendored, works offline); manifold/ (manifold-3d 3.5.4, Apache-2.0); fonts/fx-font.js (Helvetiker Bold subset)
 - assets/      – product photos, templates/ (Jacky's L90 + S90 insoles, repaired watertight STL)
@@ -416,3 +417,21 @@ The staff CRM is now about **customers and their scans**, not sales.
 - PDF receipt: the header no longer has a Status field, and the care-tips / thank-you box was removed.
 - Staff results: the yellow "Approximate fit – scan recommended" box above the STL downloads was removed. Files built without a scan still get the `-APPROX` filename suffix.
 - Screenshots: `screenshots/questions-short.png`, `screenshots/scan-upload-no-instructions.png`, `screenshots/receipt-v12.1.png`.
+
+## v13 – Contour Two-Strap sandal + Comfort Clog (`footwear.js`)
+Two new scan-fitted footwear products (catalog now 11 products, price ₱9,999 = `DEFAULT_PRICE`, override per product in `config.js` `window.FIXI_PRICES` or staff settings):
+- **Fixifoot Contour Two-Strap** (`twostrap`) – contoured footbed with raised toe bar and deep heel cup (≥16 mm), two wide straps (26 mm, scaled with foot length) over the forefoot (≈ ball line) and the instep (52 % of foot length), with a buckle-look tab and 3 holes on the outer side.
+- **Fixifoot Comfort Clog** (`clog`) – roomy closed toe box (≈ 6–8 mm toe allowance, 7 mm over the toes, 3 mm at the sides, 2.8 mm wall), honeycomb vents as real through-holes (≈ 33 cells, 15 mm cell / 4.5 mm wall), optional heel strap that pivots on two printed pins (switch in the designer and in staff view).
+
+Geometry
+- Sole = the orthotist engine (`orthotic.js` corrections, `fit.js` contact sole) with footwear minimums; 2 bodies: base TPU 95A (extruder 1) + 2.5 mm top TPU 85A (extruder 2) → one 2-material 3MF per foot.
+- Straps / clog upper / heel strap are sized from the scan's top-of-foot envelope (`measureUpper`: forefoot + instep height and width along the foot). Without a scan a synthetic foot of the entered size is used and every file is marked **APPROX**.
+- Every body is closed (watertight) and exported as its own STL (`Download STL per body`), already laid out for printing: straps on edge, clog upper upright (rim down, organic supports under the roof), heel strap on edge.
+
+Printer bed (staff → 2-material card → “Printer bed”: K1C 220×220×250 / 256 / 300, saved in localStorage `fxBed`)
+- The sole is rotated on the bed to its best angle (≈ 40–43° diagonal). On a K1C it fits with a 5 mm margin up to ≈ 250 mm foot length (≈ EU 40), up to ≈ 255 mm with only 2 mm to the edge (shown as ⚠️ tight). Bigger feet need a 256 or 300 bed.
+- The clog upper (≤ ≈ 143×141×106 mm even at 300 mm foot) and the straps always fit – no splitting needed.
+- Rough print times per foot (250 mm): sole base ≈ 13.6 h, top layer ≈ 11 h, each strap ≈ 3.6–4 h, clog upper ≈ 8.8 h, heel strap ≈ 4.2 h.
+
+Notes: a layered 2-material TPU sole needs a dual-extruder / tool-changer printer (most AMS/CFS units cannot feed 85A). Straps and the clog upper are bonded to the sole edge (TPU-compatible adhesive); the sandal sole has shallow recesses where the strap tabs sit. Designs are Fixifoot's own; no third-party names or logos.
+Combined catalog: `/workspace/fixifoot-catalog/src/build-catalog.mjs` rebuilds the 11-product PNG/PDF.
