@@ -533,7 +533,7 @@ function currentSpec(side = state.side) {
     res.fitting = { ...fit, over, applied: { archBoost: res.params.archBoost, archFill: res.params.archFill, heelCupDepth: res.params.heelCupDepth, medialPost: res.params.medialPost, lateralWedge: res.params.lateralWedge, metPad: !!res.params.metPad, heelLift: res.params.heelLift, offloadPockets: !!res.params.offloadPockets, firstMTPRelief: !!res.params.firstMTPRelief }, modelArch: mb };
     res.notes.unshift(`Orthotist engine${fit.measurements.approx ? ' (APPROX – no scan)' : ''}: ${fit.corrections.filter(c => (over[c.id] ?? c.value)).map(c => c.label + ' ' + fmtCorr(c, over[c.id] ?? c.value)).join(', ') || 'no corrections'} – starting prescription, to be reviewed by a licensed orthotist / podiatrist.`);
   }
-  if (pr?.shoe) { res.params.heelCupDepth = Math.max(res.params.heelCupDepth || 0, pr.shoe.minCup || 0); if (pr.shoe.toeBar) res.params.toeCrest = true; res.params.shore = '95A + 85A top'; } // v13 footwear: deep cup, raised toe bar
+  if (pr?.shoe) { res.params.heelCupDepth = Math.max(res.params.heelCupDepth || 0, pr.shoe.minCup || 0); if (pr.shoe.toeBar) res.params.toeCrest = true; if (pr.shoe.toeBarMm) res.params.toeCrestMm = pr.shoe.toeBarMm; if (pr.shoe.rim) res.params.shoeRim = pr.shoe.rim; if (pr.shoe.tread) res.params.tread = pr.shoe.tread; res.params.shore = '95A + 85A top'; } // v13 footwear: deep cup, raised toe bar
   const md = pr?.shoe ? shoeData(side).md : scanModel(side);
   if (md) { res.totalContact = true; res.scanArchH = md.archH; res.notes.unshift(`Total contact: top surface = scanned plantar surface (2 mm grid, heel → toe sulcus), arch filled ${res.params.archFill ?? 100}%; clinical modifications added on top.`); }
   return res;

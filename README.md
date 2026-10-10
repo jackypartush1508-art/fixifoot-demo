@@ -435,3 +435,9 @@ Printer bed (staff → 2-material card → “Printer bed”: K1C 220×220×250 
 
 Notes: a layered 2-material TPU sole needs a dual-extruder / tool-changer printer (most AMS/CFS units cannot feed 85A). Straps and the clog upper are bonded to the sole edge (TPU-compatible adhesive); the sandal sole has shallow recesses where the strap tabs sit. Designs are Fixifoot's own; no third-party names or logos.
 Combined catalog: `/workspace/fixifoot-catalog/src/build-catalog.mjs` rebuilds the 11-product PNG/PDF.
+
+## v13.2 – classic look for the two footwear models
+New hero photos (no logos / brand marks). Geometry updated to match:
+- **Contour Two-Strap**: chunky one-piece-look sole with a raised rim (5 mm, outside the scanned footprint only), pronounced 6 mm toe grip ridge, 18+ mm heel cup, light tread (1.2 mm chevron grooves in the bottom face, bridged by the first layers). Each strap now carries a molded rectangular buckle (frame + centre bar) and a strap-tail relief – same part, printed on edge, no supports. Sole side allowance 6 mm (rim width).
+- **Comfort Clog**: ~13 round Ø11 mm top vents in staggered rows + 2 elongated side vents (15×5.5 mm) per side just above the sole line, all real through-holes; smoother rounded toe box (40 mm nose rounding, ripple-free roof); light tread; swing heel strap on round rivets (Ø16 raised disc + pin), shown swung down round the heel (the strap itself is flat and printed on edge).
+- Bed limits unchanged: K1C fits ≤ 250 mm foot with 5 mm margin, ≤ 255 mm with 2 mm.

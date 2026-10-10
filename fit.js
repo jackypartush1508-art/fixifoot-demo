@@ -289,7 +289,7 @@ export function encodeGrid(gr) { const q = new Int16Array(gr.raw.length); for (l
 export function decodeGrid(e) { const s = atob(e.q), u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i); const q = new Int16Array(u.buffer), raw = new Float32Array(q.length), sil = new Uint8Array(q.length); for (let k = 0; k < q.length; k++) { raw[k] = q[k] <= -32767 ? NaN : q[k] / 10; sil[k] = q[k] === -32768 ? 0 : 1; } return { res: e.res, x0: e.x0, z0: e.z0, nx: e.nx, nz: e.nz, raw, sil }; }
 
 /* ---------------- 3. total-contact insole / footbed ---------------- */
-export const ALLOW = { insole: { side: 1.5, heel: 1, toe: 6 }, flipflop: { side: 6, heel: 5, toe: 8 }, slide: { side: 6, heel: 5, toe: 8 }, sandal: { side: 4, heel: 5, toe: 12 }, clog: { side: 5, heel: 6, toe: 7 } }; // v13: two-strap sandal / clog
+export const ALLOW = { insole: { side: 1.5, heel: 1, toe: 6 }, flipflop: { side: 6, heel: 5, toe: 8 }, slide: { side: 6, heel: 5, toe: 8 }, sandal: { side: 6, heel: 5, toe: 12 }, clog: { side: 5, heel: 6, toe: 7 } }; // v13: two-strap sandal / clog
 // clinical modifications on top of the scanned surface; u = foot length fraction (0 heel, 1 toe tip), sn = +1 medial
 function mods(md, p, u, sn, hw) {
   let z = 0; const rad = Math.PI / 180, L = md.L;
@@ -301,7 +301,7 @@ function mods(md, p, u, sn, hw) {
   z += Math.tan(p.lateralWedge * rad) * hw * (1 - sn) * 0.5 * (1 - smooth(.75, .95, u));
   const padU = md.ballU - 15 / L; // dome apex ~15 mm behind the met-head line -> front edge ~6-11 mm behind it
   if (p.metPad) { const cs = p.metPad === 'neuroma' ? -.22 : 0.05; z += 4.5 * Math.exp(-(((u - padU) / (10 / L)) ** 2 + ((sn - cs) / .28) ** 2)); }
-  if (p.toeCrest) z += 4 * gauss(u, md.sulcusU - .012, .02) * (1 - smooth(.45, .8, Math.abs(sn + .08)));
+  if (p.toeCrest) z += (p.toeCrestMm || 4) * gauss(u, md.sulcusU - .012, .02) * (1 - smooth(.45, .8, Math.abs(sn + .08)));
   if (p.mortonExtension) z += 1.5 * smooth(md.ballU - .04, md.ballU, u) * smooth(.25, .45, sn);
   const ell = (cu, cs, ru, rs) => 1 - smooth(.7, 1, Math.hypot((u - cu) / ru, (sn - cs) / rs));
   let dep = 0;
@@ -385,11 +385,15 @@ export function buildContactSole(md, opts) {
       const rf = md.rowAt(e.z), fh = Math.max(4, (rf.hi - rf.lo) / 2), sf = (x - (rf.lo + rf.hi) / 2) * md.medialX / fh;
       const cup = p.heelCupDepth * smooth(.93, 1.05, Math.hypot(Math.max(0, (.12 - u) / .12), sf)) * (1 - smooth(.22, .38, u));
       const flange = p.lateralFlange ? 7 * smooth(.68, 1, -sn) * smooth(.02, .1, u) * (1 - smooth(.52, .68, u)) : 0;
-      let top = th + Math.max(P, cup, flange) + mods(md, p, u, sn, e.half);
+      // v13.2 footwear: raised rim outside the scanned footprint (sides + toe) – never under the foot
+      const dEdge = Math.min((1 - Math.abs(sn)) * e.half, Math.max(0, e.z - F.zFront) + 99 * (1 - smooth(.9, .95, u))), rim = p.shoeRim ? p.shoeRim * (1 - smooth(2.5, 8, dEdge)) * smooth(.24, .36, u) : 0;
+      let top = th + Math.max(P, cup, flange) + mods(md, p, u, sn, e.half) + rim;
       if (M) top += modelExtra(md, M, u, sn);
       top -= smooth(.86, 1, Math.abs(sn)) * (M ? M.rim : p.noHardEdges ? 1.2 : 0.5) * (kind === 'insole' ? 1 : .6); // rounded rim
       if (frontU != null) top -= 0.6 * smooth(.9, 1, ui); // 3/4 front edge blends down
-      row.push({ u, ui, sn, x, z: e.z, tz: Math.max(M ? 1.2 : 1.0, top), bz: 0 });
+      // v13.2 footwear: light tread = shallow chevron grooves in the bottom face (bridged by the first layers, visible as notches round the edge)
+      let bz = 0; if (p.tread) { const w = Math.abs(((e.z + .45 * Math.abs(x - e.c)) / 9 % 1 + 1) % 1 - .5) * 9; bz = p.tread * (1 - smooth(1.1, 2.0, w)); }
+      row.push({ u, ui, sn, x, z: e.z, tz: Math.max(M ? 1.2 : 1.0, top), bz });
     }
     rows.push(row);
   }

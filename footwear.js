@@ -10,9 +10,11 @@ const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t
 const lerp = (a, b, t) => a + (b - a) * t;
 
 export const SHOE = {
-  sandal: { strapW: 26, strapT: 3.2, gap: 1.2, notch: 1.6, side: .25, tabBottom: 2.5, holeD: 4, buckle: 1.8, uRear: .52, dFront: .01 },
-  clog: { u0: .56, wall: 2.8, gap: .5, clearTop: 7, clearSide: 3, yB: 3, nose: 30, n: 2.6, minH: 18, vent: { cell: 15, wall: 4.5 },
-    flare: 14, strapH: 18, strapT: 3, pad: 1.2, pinH: 4.4, pinR: 3.1, holeD: 5.0, strapOff: 6 },
+  sandal: { strapW: 26, strapT: 3.2, gap: 1.2, notch: 1.6, side: .25, tabBottom: 2.5, uRear: .52, dFront: .01,
+    buckle: { h: 2.4, a: 11, bw: 2.6, at: 34, tail: 1.1, tailLen: 24 } }, // molded rectangular buckle (relief on the strap, same part)
+  clog: { u0: .56, wall: 2.8, gap: .5, clearTop: 7, clearSide: 3, yB: 3, nose: 40, n: 2.6, minH: 18,
+    vent: { n: 13, d: 11, du: 15, dx: 16.5 }, sideVent: { len: 15, h: 5.5, perSide: 2, aboveSole: 7 }, // round top vents in staggered rows + elongated side vents
+    flare: 14, strapH: 18, strapT: 3, pad: 1.6, padR: 8, pinH: 4.4, pinR: 3.1, holeD: 5.0, strapOff: 6, swingDrop: 22 }, // heel strap shown swung down: its plane is tilted about the pin axis
 };
 
 /* ---------- 1. top-of-foot envelope (max height per foot-u / across bin), from the scan mesh or the model foot ---------- */
@@ -111,29 +113,31 @@ function sandalStraps({ md, rows, env }) {
     const lo = Math.min(xMs, xLs), hi = Math.max(xMs, xLs);
     path = path.map(([x, y]) => (y < top && x > lo + .01 && x < hi - .01) ? [Math.abs(x - xMs) < Math.abs(x - xLs) ? xMs : xLs, y] : [x, y]); // never cut into the sole edge
     const Lp = plen(path), Pn = resample(path, Math.max(80, Math.ceil(Lp / .8))), ps = pathSampler(Pn, [(xMs + xLs) / 2, C.tabBottom + 8]);
-    // lateral side: raised slider frame + 3 adjustment holes (adjustable look; the strap is sized from the scan)
-    const tabL = tzL + 3 - C.tabBottom, dB = tabL + 22, uOfD = dd => 1 - dd / Lp, bU = uOfD(dB);
-    const holes = [0, 1, 2].map(k => ({ u: uOfD(dB + 16 + 7 * k), r: C.holeD / 2 }));
-    const bump = (ui, sn) => C.buckle * (1 - smooth(.72, 1, Math.max(Math.abs(ui - bU) * Lp / 9, Math.abs(sn) / .82)));
-    const plan = bandPlan(Lp, W, holes), I = v => { const q = ps(v.ui); return [q.p[0], q.p[1], zk + v.sn * W / 2]; };
+    // lateral side: molded rectangular buckle (frame + centre bar) and the strap tail lying over the strap (adjustable look; the strap is sized from the scan)
+    const B = C.buckle, tabL = tzL + 3 - C.tabBottom, dB = tabL + B.at, bL = (1 - dB / Lp) * Lp, bb = W / 2 * .8, sq = (v, a, e) => 1 - smooth(a - e, a + e * .4, Math.abs(v));
+    const bump = (ui, sn) => { const l = ui * Lp - bL, x = sn * W / 2, outer = sq(l, B.a, .7) * sq(x, bb, .7), inner = sq(l, B.a - B.bw, .6) * sq(x, bb - B.bw, .6), bar = sq(l, B.bw * .45, .5) * inner;
+      const tail = B.tail * (1 - smooth(B.tailLen - 4, B.tailLen, -l)) * smooth(-2, 0, -l) * sq(x, W / 2 * .86, .9); // tail runs from the buckle towards the top of the arch
+      return Math.max(B.h * Math.max(outer - inner, bar), tail * (1 - outer)); };
+    const plan = bandPlan(Lp, W), I = v => { const q = ps(v.ui); return [q.p[0], q.p[1], zk + v.sn * W / 2]; };
     const O = v => { const q = ps(v.ui), t = C.strapT + bump(v.ui, v.sn); return [q.p[0] + q.n[0] * t, q.p[1] + q.n[1] * t, zk + v.sn * W / 2]; };
     const b = shellBody(plan, isInsertHole(plan), I, O);
     const pg = toBed(b.geometry); // printed on edge: arch in XY, strap width along Z (no supports)
     parts.push({ id: d.id, name: d.name, geometry: b.geometry, printGeometry: pg, volumeMm3: b.volumeMm3,
-      stats: { footU: +d.u.toFixed(3), widthMm: +W.toFixed(1), thicknessMm: C.strapT, lengthMm: Math.round(Lp), archTopMm: Math.round(Math.max(...Pn.map(p => p[1]))), clearanceOverFootMm: C.gap, footTopUnderStrapMm: Math.round(envPeak), adjustmentHoles: 3, orientation: 'on edge (strap width vertical), arch flat on the bed' } });
+      stats: { footU: +d.u.toFixed(3), widthMm: +W.toFixed(1), thicknessMm: C.strapT, lengthMm: Math.round(Lp), archTopMm: Math.round(Math.max(...Pn.map(p => p[1]))), clearanceOverFootMm: C.gap, footTopUnderStrapMm: Math.round(envPeak), buckle: 'molded rectangular buckle (relief, same part)', orientation: 'on edge (strap width vertical), arch flat on the bed' } });
   }
   return parts;
 }
 
-/* ---------- 5. Comfort Clog: roomy toe-box upper with honeycomb vents + pivoting heel strap ---------- */
+/* ---------- 5. Comfort Clog: roomy toe-box upper with round top vents, side vents + swing heel strap on round rivets ---------- */
 function clogParts({ md, rows, frame: F, env, heelStrap = true }) {
   const C = SHOE.clog, T = rowTools(rows, md), sg = md.medialX, n = C.n, yB = C.yB;
   const z0 = md.zOfU(C.u0), zEi = F.zFront - C.gap;
   const edgeZ = z => F.edge(clamp((F.zBack - z) / F.Li, 0, 1));
-  const NT = 150, NA = 121, NW = 16, R = [];
+  const NT0 = 150, NC = 14, NT = NT0 + NC, NA = 121, NW = 16, R = [], capLen = 9; // NC sections beyond the sole front close the nose (rounded cap)
+  const CF = Array.from({ length: NT + 1 }, (_, k) => k <= NT0 ? 1 : Math.max(.05, Math.sqrt(1 - ((k - NT0) / NC) ** 2)));
   const frac = q => Math.pow(Math.max(0, 1 - Math.pow(Math.min(1, Math.abs(q)), n)), 1 / n);
   // section = straight side walls (yB -> yW, wrapping the sole side) + superellipse roof (yW -> H)
-  const ZI = Array.from({ length: NT + 1 }, (_, k) => lerp(z0, zEi, k / NT)), EI = ZI.map(edgeZ), AI = EI.map(e => e.half + C.gap), len = z0 - zEi;
+  const ZI = Array.from({ length: NT + 1 }, (_, k) => k <= NT0 ? lerp(z0, zEi, k / NT0) : zEi - capLen * Math.sin(Math.PI / 2 * (k - NT0) / NC)), EI = ZI.map(edgeZ), AI = EI.map((e, k) => (e.half + C.gap) * CF[k]), len = z0 - zEi;
   const LF = ZI.map(z => T.lift(clamp(md.uOfZ(z), 0, 1))), DT = ZI.map(z => z - zEi);
   const YS = ZI.map(z => { const r = rows[T.iOfZ(Math.max(z, F.zFront))]; return Math.max(r[0].tz, r[T.M - 1].tz) + 1; }); // sole edge top: the upper wraps the sole side wall up to here
   const FOOT = ZI.map((zi, k) => { const e = EI[k], a = AI[k], out = [];
@@ -142,17 +146,18 @@ function clogParts({ md, rows, frame: F, env, heelStrap = true }) {
   // roof height + per-side roof half-width (the walls may flare out above the sole so the roof clears the scanned foot)
   const solveRow = (k, yW) => { const a = AI[k], pts = FOOT[k].filter(p => p[1] > yW); if (!pts.length) return { H: DT[k] > C.nose ? yW + 10 : yB + 2, aM: a, aL: a };
     const Ymax = Math.max(...pts.map(p => p[1]));
-    for (let Ht = Ymax + 3; ; Ht += 2) { let aM = a, aL = a;
+    for (let Ht = Ymax + 3; ; Ht += .5) { let aM = a, aL = a;
       for (const [dx, y] of pts) { const r = (y - yW) / (Ht - yW), g = Math.pow(Math.max(1e-6, 1 - Math.pow(r, n)), 1 / n), need = Math.abs(dx) / g + .5; if (dx * sg >= 0) aM = Math.max(aM, need); else aL = Math.max(aL, need); }
       if ((aM <= a + C.flare && aL <= a + C.flare) || Ht > Ymax + (DT[k] > C.nose ? 40 : 12)) return { H: Ht, aM: Math.min(aM, a + C.flare), aL: Math.min(aL, a + C.flare) }; } };
   const runMax = (A, r) => A.map((_, i) => Math.max(...A.slice(Math.max(0, i - r), i + r + 1))), runMean = (A, r) => A.map((_, i) => { const s = A.slice(Math.max(0, i - r), i + r + 1); return s.reduce((x, y) => x + y, 0) / s.length; });
-  const YW0 = LF.map((l, k) => Math.max(l + 16, YS[k] + 8)), kN = clamp(Math.round((1 - C.nose / len) * NT), 0, NT), sm = A => runMean(runMax(A, 4), 6);
+  const YW0 = LF.map((l, k) => Math.max(l + 16, YS[k] + 8)), kN = clamp(Math.round((1 - C.nose / len) * NT0), 0, NT0), sm = A => runMean(runMax(A, 6), 8);
   const shape = YW => { const sol = YW.map((w, k) => solveRow(k, w)), Hr = sol.map(x => x.H); let H = sm(Hr); const HN = H[kN];
-    H = H.map((h, k) => { const d = DT[k]; if (d >= C.nose) return Math.max(h, Hr[k]); return Math.max(Hr[k], yB + (HN - yB) * Math.sqrt(Math.max(0, 1 - ((C.nose - d) / C.nose) ** 2))); });
+    const NS = C.nose + capLen; H = H.map((h, k) => { const d = DT[k] + capLen; if (d >= NS) return Math.max(h, Hr[k]); const base = YS[k] + 2; return Math.max(k > NT0 ? 0 : Hr[k], base + (HN - base) * Math.sqrt(Math.max(0, 1 - ((NS - d) / NS) ** 2))); }); // rounded nose down onto the sole edge, through the cap // nose closes onto the sole edge (never below the footbed)
+    H = runMean(H, 5).map((h, k) => Math.max(h, k > NT0 ? 0 : Hr[k] - .8)); // no ripples: smooth roof line (≤ 0.8 mm into the 7 mm clearance)
     const aM = sm(sol.map(x => x.aM)).map((v, k) => Math.max(v, AI[k])), aL = sm(sol.map(x => x.aL)).map((v, k) => Math.max(v, AI[k])); return { H, aM, aL }; };
   let SH = shape(YW0), YW = YW0.map((w, k) => Math.min(w, yB + .55 * (SH.H[k] - yB)));
   SH = shape(YW); YW = YW0.map((w, k) => Math.min(w, yB + .55 * (SH.H[k] - yB)));
-  const H = SH.H.map((h, k) => Math.max(h, YW[k] + 1));
+    const H = SH.H.map((h, k) => Math.max(h, YW[k] + 1));
   for (let k = 0; k <= NT; k++) {
     const t = k / NT, zi = ZI[k], ei = EI[k], Hi = H[k], Ho = Hi + C.wall * (1 - smooth(.94, 1, t)), yW = YW[k], yS = Math.min(YS[k], yB + .6 * (yW - yB));
     // outer outline = inner outline offset by the wall thickness along its plan normal (true offset round the toe)
@@ -183,17 +188,29 @@ function clogParts({ md, rows, frame: F, env, heelStrap = true }) {
     piv = { uiP, yP, M: snAt(1), L: snAt(-1) };
     extras.push({ id: 'pinM', u: uiP, sn: piv.M, ru: C.pinR, rs: C.pinR, n: 20, minRim: 2 }, { id: 'pinL', u: uiP, sn: piv.L, ru: C.pinR, rs: C.pinR, n: 20, minRim: 2 });
   }
-  const plan = planSplit(S, { mode: 'lattice', preset: { ...C.vent }, rimMargin: 9, allow: (u, sn) => u > .18 && u < .76 && Math.abs(sn) < .36, extras });
+  // vents: ~13 round holes in staggered rows on top of the toe box + elongated side vents just above the sole line (real through-holes)
+  const LR = ridge[NT], halfAt = ui => S(ui, 1).x, uiOfL = l => { let a = 0, b = 1; for (let it = 0; it < 40; it++) { const m = (a + b) / 2; if (S(m, 0).l < l) a = m; else b = m; } return (a + b) / 2; };
+  const V = C.vent, lc = LR * .5, cand = [];
+  for (let r = -4; r <= 4; r++) for (let j = -5; j <= 5; j++) { const l = lc + r * V.du, x = (j + (r & 1) * .5) * V.dx, ui = uiOfL(l); if (ui < .2 || ui > .84) continue; const sn = x / halfAt(ui); if (Math.abs(sn) > .4) continue;
+    cand.push({ ui, sn, d: Math.hypot(l - lc, x / 1.3) }); }
+  cand.sort((a, b) => a.d - b.d);
+  for (const c of cand.slice(0, V.n + 4)) extras.push({ id: 'vent' + extras.length, u: c.ui, sn: c.sn, ru: V.d / 2, rs: V.d / 2, n: 24, minRim: 3, _top: 1 });
+  const SV = C.sideVent, snY = (ui, side, y) => { let lo = side > 0 ? 0 : -1, hi = side > 0 ? 1 : 0; for (let it = 0; it < 40; it++) { const m = (lo + hi) / 2, yy = at(ui, m, false)[1]; if ((yy > y) === (side > 0)) lo = m; else hi = m; } return (lo + hi) / 2; };
+  const uiS0 = piv ? piv.uiP + 22 / LR : .2;
+  for (let q = 0; q < SV.perSide; q++) { const ui = lerp(uiS0, .66, SV.perSide > 1 ? q / (SV.perSide - 1) : .5), k = Math.round(ui * NT), y = Math.min(YS[k], yB + .6 * (YW[k] - yB)) + SV.aboveSole;
+    for (const side of [1, -1]) extras.push({ id: 'side' + extras.length, u: ui, sn: snY(ui, side, y), ru: SV.len / 2, rs: SV.h / 2, n: 24, minRim: 2.5 }); }
+  const plan = planSplit(S, { rimMargin: 6, extras });
+  { let kept = 0; for (const f of plan.feats) if (f.kind === 'insert' && /^vent/.test(f.id)) { kept++; if (kept > V.n) f.kind = 'dropped'; } }
   const devAt = (ui, sn) => { const s = S(ui, sn); return [s.x, s.l]; };
   const pinD = piv ? ['M', 'L'].map(k => { const d = devAt(piv.uiP, piv[k]); return d; }) : [];
   const bumpAt = v => { if (!piv) return 0; let b = 0; for (const d of pinD) { const s = S(v.ui, v.sn), r = Math.hypot(s.x - d[0], s.l - d[1]);
-    b = Math.max(b, C.pad * (1 - smooth(5, 8, r)) + C.pinH * (1 - smooth(C.pinR * .62, C.pinR * .9, r))); } return b; };
+    b = Math.max(b, C.pad * (1 - smooth(C.padR - 2.5, C.padR, r)) + C.pinH * (1 - smooth(C.pinR * .62, C.pinR * .9, r))); } return b; }; // round rivet: raised disc + pin
   const Ifn = v => at(v.ui, v.sn, false), Ofn = v => { const o = at(v.ui, v.sn, true), b = bumpAt(v); if (!b) return o; const i = at(v.ui, v.sn, false), d = [o[0] - i[0], o[1] - i[1], o[2] - i[2]], l = Math.hypot(...d) || 1; return [o[0] + d[0] / l * b, o[1] + d[1] / l * b, o[2] + d[2] / l * b]; };
-  const isVent = t => t.t === 'i' && plan.feats[t.f].kind === 'cell';
-  const vents = plan.feats.filter(f => f.kind === 'cell').length;
+  const isVent = t => t.t === 'i' && plan.feats[t.f].kind === 'insert' && /^(vent|side)/.test(plan.feats[t.f].id);
+  const vents = plan.feats.filter(f => f.kind === 'insert' && /^vent/.test(f.id)).length, sideVents = plan.feats.filter(f => f.kind === 'insert' && /^side/.test(f.id)).length;
   const up = shellBody(plan, t => !isVent(t), Ifn, Ofn);
-  const parts = [{ id: 'upper', name: 'Clog upper (toe box, honeycomb vents)', geometry: up.geometry, printGeometry: toBed(up.geometry, Math.PI / 2), volumeMm3: up.volumeMm3,
-    stats: { throatFootU: C.u0, wallMm: C.wall, toeAllowanceMm: +(md.zToe - zEi).toFixed(1), clearanceTopMm: C.clearTop, clearanceSideMm: C.clearSide, heightMm: Math.round(Math.max(...R.map(r => r.Ho))), roofProfileMm: H.filter((_, k) => k % 15 === 0).map(Math.round), wallTopMm: YW.filter((_, k) => k % 15 === 0).map(Math.round), roofHalfMm: SH.aM.filter((_, k) => k % 15 === 0).map(Math.round), vents, ventCellMm: C.vent.cell, ventWallMm: C.vent.wall, orientation: 'upright, rim down; organic supports under the toe-box roof only' } }];
+  const parts = [{ id: 'upper', name: 'Clog upper (toe box, round vents)', geometry: up.geometry, printGeometry: toBed(up.geometry, Math.PI / 2), volumeMm3: up.volumeMm3,
+    stats: { throatFootU: C.u0, wallMm: C.wall, toeAllowanceMm: +(md.zToe - zEi).toFixed(1), clearanceTopMm: C.clearTop, clearanceSideMm: C.clearSide, heightMm: Math.round(Math.max(...R.map(r => r.Ho))), roofProfileMm: H.filter((_, k) => k % 15 === 0).map(Math.round), wallTopMm: YW.filter((_, k) => k % 15 === 0).map(Math.round), roofHalfMm: SH.aM.filter((_, k) => k % 15 === 0).map(Math.round), vents, ventDiameterMm: C.vent.d, sideVents, sideVentMm: [SV.len, SV.h], orientation: 'upright, rim down; organic supports under the toe-box roof only' } }];
   if (piv) { // pivoting heel strap: band around the heel, outside the sole outline, holes over the pins
     const pM = Ofn({ ui: piv.uiP, sn: piv.M }), pL = Ofn({ ui: piv.uiP, sn: piv.L }), iM = Ifn({ ui: piv.uiP, sn: piv.M }), iL = Ifn({ ui: piv.uiP, sn: piv.L });
     const padM = Ofn({ ui: piv.uiP + 5.5 / ridge[NT], sn: piv.M }), padL = Ofn({ ui: piv.uiP + 5.5 / ridge[NT], sn: piv.L }); // pad surface next to the pin
@@ -208,8 +225,12 @@ function clogParts({ md, rows, frame: F, env, heelStrap = true }) {
     const proj = s => { let b = 0, bd = Infinity; P2.forEach((p, i) => { const d = Math.hypot(p[0] - s[0], p[1] - s[1]); if (d < bd) { bd = d; b = i; } }); return b / (P2.length - 1); };
     const hs = [proj(sM), proj(sL)], plan2 = bandPlan(Lp, C.strapH, hs.map(u => ({ u, r: C.holeD / 2 })));
     const I2 = v => { const q = ps(v.ui); return [q.p[0], piv.yP + v.sn * C.strapH / 2, q.p[1]]; }, O2 = v => { const q = ps(v.ui); return [q.p[0] + q.n[0] * C.strapT, piv.yP + v.sn * C.strapH / 2, q.p[1] + q.n[1] * C.strapT]; };
-    const hb = shellBody(plan2, isInsertHole(plan2), I2, O2);
-    parts.push({ id: 'heelStrap', name: 'Heel strap (pivots on the two pins)', geometry: hb.geometry, printGeometry: toBed(hb.geometry, Math.PI / 2), volumeMm3: hb.volumeMm3,
+    const hb = shellBody(plan2, isInsertHole(plan2), I2, O2), flat = hb.geometry, worn = flat.clone();
+    { // swing the strap down round the pin axis (planar part -> printed flat on edge, worn tilted round the heel)
+      const zBackS = Math.max(...back.map(q => q[1])), ang = Math.atan2(C.swingDrop, Math.max(40, zBackS - zP)), Pz = worn.attributes.position;
+      for (let i = 0; i < Pz.count; i++) { const y = Pz.getY(i) - piv.yP, z = Pz.getZ(i) - zP; Pz.setY(i, piv.yP + y * Math.cos(ang) - z * Math.sin(ang)); Pz.setZ(i, zP + y * Math.sin(ang) + z * Math.cos(ang)); }
+      worn.computeVertexNormals(); }
+    parts.push({ id: 'heelStrap', name: 'Heel strap (swings on the two rivets)', geometry: worn, printGeometry: toBed(flat, Math.PI / 2), volumeMm3: hb.volumeMm3,
       stats: { heightMm: C.strapH, thicknessMm: C.strapT, lengthMm: Math.round(Lp), pivotHeightMm: Math.round(piv.yP), pinDiameterMm: +(C.pinR * 1.5).toFixed(1), pinLengthMm: C.pinH, strapHoleMm: C.holeD, holesFound: plan2.feats.filter(f => f.kind === 'insert').length, orientation: 'on edge (strap height vertical), no supports' } });
   }
   return parts;
