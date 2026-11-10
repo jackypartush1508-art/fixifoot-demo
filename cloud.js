@@ -16,7 +16,7 @@ const emit = () => listeners.forEach(fn => { try { fn(Cloud); } catch (e) { cons
 export async function initCloud() {
   if (!Cloud.configured) return Cloud;
   try {
-    Cloud.client = createClient(cfg.url, cfg.anonKey, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'fxSupabaseAuth' } });
+    Cloud.client = createClient(cfg.url, cfg.anonKey, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, storage: window.localStorage, storageKey: 'fxSupabaseAuth' } }); // v14: explicit localStorage so the Home Screen app keeps the session after close/reopen (it has its own storage, separate from Safari)
     const { data } = await Cloud.client.auth.getSession();
     Cloud.session = data.session; if (Cloud.session) await loadProfile();
     Cloud.client.auth.onAuthStateChange(async (_e, session) => { Cloud.session = session; Cloud.profile = null; if (session) await loadProfile(); emit(); });

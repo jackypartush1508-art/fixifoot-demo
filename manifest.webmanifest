@@ -1,11 +1,11 @@
 {
   "name": "Fixifoot Philippines – Custom Fit Demo",
   "short_name": "Fixifoot",
-  "description": "Demo: scan your feet and design custom 3D-printed insoles and flip-flops.",
+  "description": "Scan your feet and design custom 3D-printed insoles, sandals and clogs. Works on iPad (Home Screen).",
   "start_url": "./index.html?source=pwa",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
+  "orientation": "any",
   "background_color": "#ffffff",
   "theme_color": "#0099FF",
   "icons": [

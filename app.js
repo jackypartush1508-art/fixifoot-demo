@@ -13,7 +13,8 @@ import { OPENING_PRESETS, HOLE_DIAMETERS, defaultAllow } from './openings.js';
 import { buildTwoMaterial, bodiesToPrint, build3MF, zipStore } from './multi.js';
 import { Cloud, initCloud, pingCloud, updateOrderPaymentCloud, updateOrderStatusCloud, scanSig, signedUrl, onCloudChange, signIn, signUp, signOut, resetPassword, fetchCustomers, saveCustomerCloud, insertOrderCloud, deleteCustomerCloud, listStaff, setRole, upsertVisitCloud, deleteVisitCloud } from './cloud.js';
 import { buildFittingPdf } from './receipt.js';
-import { PAY_METHODS, bizSettings, saveBizSettings, bizConfigured, buildReceiptPdf, downloadBlob, shareBlob, printBlob } from './receipt.js';
+import { PAY_METHODS, bizSettings, saveBizSettings, bizConfigured, buildReceiptPdf, downloadBlob, shareBlob, printBlob, isIOS, isStandalone } from './receipt.js';
+import { SCAN_ACCEPT, MAX_TRIS, loadScanFile, decimateGeometry, triangleCount, disposeObject } from './scanio.js';
 import { measureFoot, prescribe, applyCorrections, rearfootFromMesh } from './orthotic.js';
 import { buildFootwear, measureUpper, sandalNotch, bedFit, rotateOnBed, surfaceArea, printEstimate, toBed, BEDS, currentBed } from './footwear.js';
 import { alignScan, rasterizePlantar, deriveModel, encodeGrid, decodeGrid, buildContactSole, morphTemplate, toPrintable, fitCheck, colorByGap, drawFitMap, ALLOW } from './fit.js';
@@ -39,13 +40,23 @@ const state = {
 window.__fixifoot = state; // handy for debugging
 
 /* ---------------- 3D viewer ---------------- */
+const Viewers = new Set();
+function resizeAllViewers() { for (const v of Viewers) try { v.resize(); } catch (e) {} }
+window.addEventListener('orientationchange', () => setTimeout(() => { resizeAllViewers(); updateCrmSplit(); }, 250));
+window.addEventListener('resize', () => { resizeAllViewers(); });
+visualViewport?.addEventListener('resize', () => resizeAllViewers());
 class Viewer {
   constructor(el, opts = {}) {
     this.el = el; this.free = !!opts.free; this.labels = []; this.tween = null;
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
-    this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    const pad = isIOS() || isStandalone();
+    this.renderer = new THREE.WebGLRenderer({ antialias: !pad, alpha: true, preserveDrawingBuffer: false, powerPreference: pad ? 'low-power' : 'default' });
+    this.renderer.setPixelRatio(Math.min(pad ? 1.5 : 2, window.devicePixelRatio || 1)); // v14: cap pixel ratio on iPad to stay under Safari's memory limit
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     el.prepend(this.renderer.domElement);
+    this.renderer.domElement.style.touchAction = 'none';
+    this.renderer.domElement.addEventListener('webglcontextlost', ev => { ev.preventDefault(); this._lost = true; toast('The 3D view ran out of memory and reset. The scan is still here – rotate the view to redraw, or upload a smaller file.', 5000); });
+    this.renderer.domElement.addEventListener('webglcontextrestored', () => { this._lost = false; this.renderer.setPixelRatio(Math.min(pad ? 1.5 : 2, window.devicePixelRatio || 1)); this.resize(); if (this.obj) this.renderer.render(this.scene, this.camera); });
+    Viewers.add(this);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(35, 1, 1, 5000);
     if (this.free) {
@@ -98,7 +109,7 @@ class Viewer {
     this.labels = list.map(({ text, pos }) => { const el = document.createElement('span'); el.className = 'v-label'; el.textContent = text; this.el.appendChild(el); return { el, pos }; });
   }
   set(obj, keepView = false, view = 'top') {
-    if (this.obj) { this.scene.remove(this.obj); this.obj.traverse(o => { if (o.geometry) o.geometry.dispose(); }); }
+    if (this.obj) { this.scene.remove(this.obj); disposeObject(this.obj); }
     this.obj = obj; this.scene.add(obj);
     const box = new THREE.Box3().setFromObject(obj), size = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3());
     this.shadow.scale.set(size.x * 1.6, size.z * 1.25, 1); this.shadow.position.set(ctr.x, box.min.y - 0.5, ctr.z);
@@ -134,7 +145,7 @@ function show(id, push = true) {
   if (push && state.history[state.history.length - 1] !== id) state.history.push(id);
   const step = SCREENS.indexOf(id);
   $('#stepsFill').style.width = (step < 0 ? 100 : step / (SCREENS.length - 1) * 100) + '%';
-  $('#backBtn').classList.toggle('hide', id === 's-welcome'); document.body.classList.toggle('on-staff', ['s-staff', 's-align', 's-fit'].includes(id)); document.body.classList.toggle('on-welcome', id === 's-welcome'); renderBanner();
+  $('#backBtn').classList.toggle('hide', id === 's-welcome'); document.body.classList.toggle('on-staff', ['s-staff', 's-align', 's-fit', 's-crm'].includes(id)); updateCrmSplit(); document.body.classList.toggle('on-welcome', id === 's-welcome'); renderBanner();
   window.scrollTo(0, 0);
   onEnter[id]?.(); syncTestMode();
 }
@@ -272,6 +283,28 @@ $('#noScanBtn').onclick = () => {
   };
   draw();
 };
+function showLoadProg(msg) { const b = $('#loadProg'), t = $('#loadProgTxt'); if (!b) { toast(msg); return; } b.classList.remove('hidden'); if (t) t.textContent = msg || 'Loading scan…'; }
+function hideLoadProg() { $('#loadProg')?.classList.add('hidden'); }
+$('#loadProg') && ($('#loadProg').onclick = hideLoadProg);
+function bindScanInput(el) { if (el) el.setAttribute('accept', SCAN_ACCEPT); }
+// v14: read STL / OBJ / PLY / ZIP, downsample huge meshes, then align
+async function ingestScan(file, { progress } = {}) {
+  const note = m => { showLoadProg(m); progress?.(m); };
+  try {
+    const { obj, name } = await loadScanFile(file, { onProgress: note });
+    let raw = objToGeo(obj);
+    disposeObject(obj);
+    const n = triangleCount(raw);
+    if (n > MAX_TRIS) {
+      const slim = decimateGeometry(raw, MAX_TRIS, note);
+      if (slim !== raw) { raw.dispose(); raw = slim; }
+    }
+    note('Fitting the scan…');
+    const res = alignScan(raw, name);
+    return { raw, res, name, triangles: triangleCount(raw) };
+  } finally { hideLoadProg(); }
+}
+
 // uploaded scans: auto-align (units, floor plane, heel/toe, left/right, trim ankle) -> 2 mm plantar map
 function objToGeo(obj) {
   if (obj.isBufferGeometry) { const g = obj.index ? obj.toNonIndexed() : obj; if (!g.attributes.position?.count) throw new Error('No mesh found in the file'); const h = new THREE.BufferGeometry(); h.setAttribute('position', g.attributes.position); return h; } // STL / PLY (PLY may be indexed, with colours)
@@ -306,23 +339,18 @@ function realign(side, nudge) {
   if (ns !== side) { delete state.feet[side]; delete state.uploaded[side]; delete state.rawScans[side]; state.nudge[ns] = nudge; delete state.nudge[side]; }
   return applyAligned(res, r.name, r.geo);
 }
+bindScanInput($('#fileInput'));
 $('#fileInput').onchange = async e => {
   const f = e.target.files[0]; if (!f) return; e.target.value = '';
   try {
-    toast('Loading ' + f.name + '…');
-    let obj;
-    if (/\.stl$/i.test(f.name)) obj = new STLLoader().parse(await f.arrayBuffer());
-    else if (/\.obj$/i.test(f.name)) obj = new OBJLoader().parse(await f.text());
-    else if (/\.ply$/i.test(f.name)) obj = new PLYLoader().parse(await f.arrayBuffer());
-    else throw new Error('Please choose an STL, OBJ or PLY file');
-    const raw = objToGeo(obj);
-    const res = alignScan(raw, f.name);
-    const side = applyAligned(res, f.name, raw);
+    const { raw, res, name } = await ingestScan(f, { progress: toast });
+    const side = applyAligned(res, name, raw);
     state.nudge[side] = {};
-    toast(`${f.name}: ${sideName(side)} foot detected · ${res.info.units} → mm · ${Math.round(res.model.L)} mm long`, 3600);
+    toast(`${name}: ${sideName(side)} foot detected · ${res.info.units} → mm · ${Math.round(res.model.L)} mm long`, 3600);
     if (state.staff) { state.alignSide = side; state.alignThen = true; show('s-align'); }
     else afterCapture(side);
   } catch (err) { console.warn(err); toast('Could not read this scan: ' + err.message + '. Please try another file or ask our staff.', 5000); }
+  finally { hideLoadProg(); }
 };
 
 /* ---------------- preview: both feet side by side ---------------- */
@@ -850,7 +878,7 @@ function renderOrder() {
   $('#priceLines').innerHTML = lines.map(l => `<div class="row-between"><span>${l[0]}</span><span>${peso(l[1])}</span></div>`).join('') + (state.design ? '<p>Includes your custom fit, all support features and your colours. Pay at the counter: cash, GCash, Maya, card or bank transfer.</p>' : '<p>Estimate – final price confirmed by our staff.</p>');
   $('#priceTag').classList.toggle('hidden', !!state.design);
 }
-function download(name, data, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([data], { type })); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500); }
+function download(name, data, type) { const blob = data instanceof Blob ? data : new Blob([data], { type: type || 'application/octet-stream' }); downloadBlob(blob, name, type).then(how => { if (how === 'shared') toast('Choose “Save to Files” in the share sheet'); }).catch(e => toast('Could not save ' + name + ': ' + e.message, 4000)); }
 /* ---------------- production export (shared by order + staff dashboard) ---------------- */
 const newOrderId = () => 'FXF-' + Date.now().toString(36).toUpperCase();
 function ensureProduct() { if (!state.product) { state.product = R.PRODUCTS.find(x => x.id === 'fullcontact'); state.color = state.product.colors[0]; } return state.product; }
@@ -943,7 +971,9 @@ function renderBanner() {
   $('#staffBtn').textContent = state.staff ? '👤 Customer' : '🛠 Staff view';
 }
 function setStaff(on) {
-  state.staff = on; document.body.classList.toggle('staff', on); sessionStorage.setItem('fxStaff', on ? '1' : '0'); syncTestMode();
+  state.staff = on; document.body.classList.toggle('staff', on); sessionStorage.setItem('fxStaff', on ? '1' : '0');
+  try { if (on && Cloud.ready) localStorage.setItem('fxStaffCloud', '1'); else if (!on) localStorage.setItem('fxStaffCloud', '0'); } catch (e) {}
+  syncTestMode();
   if (on) { toast('Staff view on'); show('s-staff'); }
   else { toast('Customer view'); if ($('#s-staff').classList.contains('active')) { state.history = state.history.filter(h => h !== 's-staff'); show(state.history[state.history.length - 1] || 's-welcome', false); } else { const act = document.querySelector('.screen.active'); if (act && onEnter[act.id] && !['s-scan'].includes(act.id)) onEnter[act.id](); } }
   renderBanner();
@@ -1351,7 +1381,7 @@ function renderCRM() {
       return `<div class="crm-item ${c.id === state.customerId ? 'on' : ''}" data-id="${esc(c.id)}"><div class="crm-av">${esc((c.name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase())}</div>
         <div class="crm-main"><b>${esc(c.name)}</b><span>${esc(c.phone || 'no phone')} · ${(c.orders || []).length} order(s)${last ? ` · <i class="st st-${ordStatus(last)}">${stLabel(ordStatus(last))}</i>` : ''}${custScanPending(c) ? ' · <i class="st st-pending">📷 Scan pending</i>' : ''}</span><small>${feet || 'no scan'}</small>${(() => { const v = visitsOf(c)[0]; return v ? `<small class="muted">Last scan ${phtDT(v.date)}${v.payment?.status === 'paid' ? ' · ✅ paid' : v.payment?.amount ? ' · unpaid' : ''}</small>` : ''; })()}${(c.tags || []).length ? `<span class="tagrow">${c.tags.map(t => `<i class="ctag ctag-${esc(t.toLowerCase())}">${esc(t)}</i>`).join('')}</span>` : ''}</div><span class="crm-go">›</span></div>`;
     }).join('') : '<p class="muted center">No customers found.</p>';
-    $$('#crmList .crm-item').forEach(el => el.onclick = () => openCustomer(el.dataset.id));
+    $$('#crmList .crm-item').forEach(el => { el.classList.toggle('on', el.dataset.id === (custRoot()?.dataset.cid || $('#sheet')?.dataset.cid)); el.onclick = () => openCustomer(el.dataset.id); });
   }
   if (crmTab === 'orders') renderOrders(list, F, where);
   if (crmTab === 'reminders') renderReminders(list);
@@ -1437,12 +1467,15 @@ function saveCustomerMeta(c, msg = 'Saved') {
   const list = crmAll(), i = list.findIndex(x => x.id === c.id); c.updatedAt = new Date().toISOString(); if (i >= 0) list[i] = c; crmSave(list);
   if (cloudOn()) cloudJob('save', () => saveCustomerCloud(c)); toast(msg);
 }
+function crmSplitOn() { return window.matchMedia('(min-width: 768px) and (orientation: landscape)').matches && !!$('#crmDetail') && $('#s-crm')?.classList.contains('active'); }
+function updateCrmSplit() { document.body.classList.toggle('crm-split', crmSplitOn()); if (!crmSplitOn()) return; /* move an open sheet customer card into the side panel on rotate */ if (!$('#sheet').classList.contains('hidden') && $('#sheet').dataset.cid) openCustomer($('#sheet').dataset.cid); }
+function custRoot() { return crmSplitOn() ? $('#crmDetail') : $('#sheet'); }
 function openCustomer(id) {
   const c = crmAll().find(x => x.id === id); if (!c) return;
   c.tags = c.tags || [];
   const probs = problemNames(c), s = c.settings || {}, pf = s.perFoot && Object.keys(s.perFoot).length ? s.perFoot : probs.perFoot;
   const tags = [...new Set([...TAG_PRESETS, ...c.tags])], hist = scanHistoryOf(c), vs = visitsOf(c);
-  sheet(`<div class="row-between"><h3 style="margin:0">${esc(c.name)}</h3><span class="tag" title="${esc(c.id)}">${esc(String(c.id).length > 12 ? String(c.id).slice(0, 8) : c.id)}</span></div>
+  const card = `<div class="row-between"><h3 style="margin:0">${esc(c.name)}</h3><span class="tag" title="${esc(c.id)}">${esc(String(c.id).length > 12 ? String(c.id).slice(0, 8) : c.id)}</span></div>
     <p class="muted small" style="margin:4px 0 6px">Customer since ${fmtDate(c.createdAt)}${c.phone ? ` · <a href="tel:${esc(c.phone.replace(/[^\d+]/g, ''))}">📞 ${esc(c.phone)}</a>` : ''}</p>
     <div class="tagrow cc-tags">${tags.map(t => `<button class="ctag ctag-${esc(t.toLowerCase())} ${c.tags.includes(t) ? 'on' : ''}" data-tag="${esc(t)}">${c.tags.includes(t) ? '✓ ' : '+ '}${esc(t)}</button>`).join('')}<span class="cc-addtag"><input id="ccTagIn" placeholder="Custom tag" maxlength="24"><button class="btn ghost" id="ccTagAdd">Add</button></span></div>
     ${custScanPending(c) ? `<div class="warn-card cc-pending"><b>📷 Scan pending</b><p class="tiny">Built from ${esc([...new Set(Object.values(c.feet || {}).filter(f => NEEDS_SCAN_SRC.includes(f.source)).map(f => f.source === 'self' ? 'the customer’s ' + (f.entered?.unitLabel || 'size') + ' ' + (f.entered?.value ?? '') : 'manual measurements'))].join(' / '))} – approximate fit. Add the 3D scan to rebuild the print files.</p><button class="btn primary big" id="ccAddScan">📷 Add scan</button></div>` : ''}
@@ -1459,11 +1492,13 @@ function openCustomer(id) {
     <table class="params">${Object.entries(pf).map(([sd, x]) => `<tr><td>${sideName(sd)}</td><td>${R.ARCH_TYPES[x.archType]?.short} · arch ${x.archHeight} mm · cup ${x.heelCupDepth} mm${x.medialPost ? ' · post ' + x.medialPost + '°' : ''}${x.lateralWedge ? ' · wedge ' + x.lateralWedge + '°' : ''}${x.heelLift ? ' · lift ' + x.heelLift + ' mm' : ''}${x.metPad ? ' · met pad' : ''} · ${x.shore}</td></tr>`).join('') || '<tr><td colspan="2" class="muted">–</td></tr>'}
       <tr><td>Product</td><td>${esc(R.PRODUCTS.find(p => p.id === s.productId)?.name || '–')}${s.design ? ' · ' + esc(PAL(s.design.colors?.base).name) + ' / ' + esc(PAL(s.design.colors?.top).name) : ''}</td></tr></table></details>
     <div class="crm-actions"><button class="btn ghost" id="crmLoad">Open in dashboard</button><button class="btn ghost" id="crmDel"${cloudOn() && !Cloud.isAdmin ? ' disabled title="Admins only"' : ''}>Delete</button></div>
-`);
+`;
+  if (crmSplitOn()) { $('#crmDetail').innerHTML = card; $('#sheet').classList.add('hidden'); $('#sheet').dataset.cid = ''; document.body.classList.add('crm-has-detail'); }
+  else { sheet(card); }
   bindVisits(c, vs); $('#ccNewVisit').onclick = () => openScanVisit(c.id);
-  $('#sheet').dataset.cid = c.id;
-  $$('#sheet .cc-st select').forEach(sel => sel.onchange = () => setOrderStatus(c.id, sel.dataset.oid, sel.value));
-  $$('#sheet [data-tag]').forEach(b => b.onclick = () => { const t = b.dataset.tag; c.tags = c.tags.includes(t) ? c.tags.filter(x => x !== t) : [...c.tags, t]; saveCustomerMeta(c, 'Tags updated'); openCustomer(c.id); });
+  const root = custRoot(); root.dataset.cid = c.id;
+  root.querySelectorAll('.cc-st select').forEach(sel => sel.onchange = () => setOrderStatus(c.id, sel.dataset.oid, sel.value));
+  root.querySelectorAll('[data-tag]').forEach(b => b.onclick = () => { const t = b.dataset.tag; c.tags = c.tags.includes(t) ? c.tags.filter(x => x !== t) : [...c.tags, t]; saveCustomerMeta(c, 'Tags updated'); openCustomer(c.id); });
   $('#ccTagAdd').onclick = () => { const t = $('#ccTagIn').value.trim().replace(/\s+/g, ' ').slice(0, 24); if (!t) return; const pre = TAG_PRESETS.find(p => p.toLowerCase() === t.toLowerCase()) || t; if (!c.tags.includes(pre)) c.tags = [...c.tags, pre]; saveCustomerMeta(c, 'Tag added'); openCustomer(c.id); };
   $('#ccSaveDet').onclick = () => { const n = $('#ccName').value.trim(); if (!n) { toast('Name is required'); return; } Object.assign(c, { name: n, phone: $('#ccPhone').value.trim(), email: $('#ccEmail').value.trim() }); saveCustomerMeta(c, 'Details saved'); openCustomer(c.id); renderCRM(); };
   $('#ccSaveNotes').onclick = () => { c.notes = $('#ccNotes').value.trim(); saveCustomerMeta(c, 'Notes saved'); };
@@ -1475,7 +1510,7 @@ function openCustomer(id) {
     if (cloudOn() && !Cloud.isAdmin) { toast('Only an admin can delete customers'); return; }
     if (!confirm('Delete ' + c.name + (cloudOn() ? ' (cloud record, scans and STL files)?' : ' from this device?'))) return;
     if (cloudOn()) { try { await cloudQueue; await deleteCustomerCloud(c); } catch (e) { toast('Delete failed: ' + e.message, 4500); return; } }
-    crmSave(crmAll().filter(x => x.id !== c.id)); if (state.customerId === c.id) state.customerId = null; $('#sheet').classList.add('hidden'); renderCRM(); };
+    crmSave(crmAll().filter(x => x.id !== c.id)); if (state.customerId === c.id) state.customerId = null; $('#sheet').classList.add('hidden'); if ($('#crmDetail')) $('#crmDetail').innerHTML = '<div class="crm-detail-empty muted">Select a customer to see their scans, visits and orders.</div>'; renderCRM(); };
 }
 // v11.1: add the 3D scan later for a "scan pending" customer -> regenerate the print files of the pending order(s)
 const custScanPending = c => !!c.scanPending || needsScanFeet(c.feet);
@@ -1545,9 +1580,9 @@ function openScanVisit(cid, edit = null) {
   const keep = () => { if (!$('#svDate')) return; form.date = $('#svDate').value ? fromLocalInput($('#svDate').value) : form.date; form.amount = $('#svAmt').value; form.method = $('#svMethod').value; form.notes = $('#svNotes').value; };
   const draw = () => {
     sheet(`<div class="row-between"><h3 style="margin:0">${isNew ? '＋ New scan visit' : '✏ Scan visit'} – ${esc(c.name)}</h3><button class="btn ghost small-btn" id="svBack">← Back</button></div>
-      ${isNew ? `<p class="small muted">Upload the 3D scan of one or both feet (STL, OBJ or PLY – left/right detected automatically), or save the visit without a file.</p>
+      ${isNew ? `<p class="small muted">Upload the 3D scan of one or both feet (STL, OBJ, PLY, or a ZIP of an OBJ – from the Files app, including 3d Scanner App, Polycam and Heges). Left/right is detected automatically. You can also save the visit without a file.</p>
       <div class="scan-feet">${['R', 'L'].map(sd => `<div class="sf ${got[sd] ? 'done' : ''}"><div class="sf-ic">${got[sd] ? '✓' : sd === 'R' ? '①' : '②'}</div><div><b>${sideName(sd)} foot</b><small>${got[sd] ? esc(got[sd]) + ' · ' + state.feet[sd].length + ' mm' : 'no file yet'}</small></div></div>`).join('')}</div>
-      <label class="btn ghost big file-btn"><span>📂 ${Object.keys(got).length ? 'Upload the other foot' : 'Upload scan file(s)'}</span><input type="file" id="svFile" accept=".stl,.obj,.ply,model/stl,model/obj,application/octet-stream" multiple></label><p class="tiny" id="svMsg"></p>`
+      <label class="btn ghost big file-btn"><span>📂 ${Object.keys(got).length ? 'Upload the other foot' : 'Upload scan file(s)'}</span><input type="file" id="svFile" accept=".stl,.obj,.ply,.zip,application/zip,application/octet-stream,*/*" multiple></label><p class="tiny" id="svMsg"></p>`
       : `<p class="small muted">${FEET_LABEL[edit.feet]} · ${['R', 'L'].filter(s => edit.files?.[s]).map(s => esc(edit.files[s])).join(', ') || 'no file'}</p>`}
       <label class="field">Date &amp; time (Philippine time)<input type="datetime-local" id="svDate" value="${toLocalInput(form.date)}"></label>
       <h4 class="crm-h">Payment</h4>
@@ -1559,16 +1594,17 @@ function openScanVisit(cid, edit = null) {
       ${!isNew && edit.id && (!cloudOn() || Cloud.isAdmin) ? '<button class="btn ghost" id="svDel">Delete this visit</button>' : ''}`);
     $('#svBack').onclick = () => openCustomer(c.id);
     $$('#svSt button').forEach(b => b.onclick = () => { form.status = b.dataset.st; $$('#svSt button').forEach(x => x.classList.toggle('on', x === b)); });
-    $('#svFile') && ($('#svFile').onchange = async e => {
+    if ($('#svFile')) { bindScanInput($('#svFile')); $('#svFile').onchange = async e => {
       keep();
       for (const f of [...e.target.files]) {
         try { $('#svMsg').textContent = 'Reading ' + f.name + '…';
-          let obj; if (/\.stl$/i.test(f.name)) obj = new STLLoader().parse(await f.arrayBuffer()); else if (/\.obj$/i.test(f.name)) obj = new OBJLoader().parse(await f.text()); else if (/\.ply$/i.test(f.name)) obj = new PLYLoader().parse(await f.arrayBuffer()); else throw new Error('Please choose an STL, OBJ or PLY file');
-          const raw = objToGeo(obj), res = alignScan(raw, f.name), sd = applyAligned(res, f.name, raw); state.nudge[sd] = {}; got[sd] = f.name;
+          const { raw, res, name } = await ingestScan(f, { progress: m => $('#svMsg') && ($('#svMsg').textContent = m) });
+          const sd = applyAligned(res, name, raw); state.nudge[sd] = {}; got[sd] = name;
         } catch (err) { console.warn(err); toast('Could not read ' + f.name + ': ' + err.message, 4500); }
+        finally { hideLoadProg(); }
       }
       draw();
-    });
+    }; }
     $('#svDel') && ($('#svDel').onclick = async () => {
       if (!confirm('Delete this scan visit?')) return;
       if (cloudOn()) { try { await cloudQueue; await deleteVisitCloud(edit.id); } catch (e) { toast('Delete failed: ' + e.message, 4500); return; } }
@@ -1848,13 +1884,26 @@ if (qp.get('demo') && testHooks) {
   recompute();
   if (qp.get('product')) { state.product = R.PRODUCTS.find(p => p.id === qp.get('product')); state.color = state.product?.colors[0]; state.strapColor = state.product?.strapColors?.[0]; }
 }
-window.__fixiFit = { alignScan, rasterizePlantar, deriveModel, buildContactSole, morphTemplate, toPrintable, fitCheck, buildFoot, STLLoader, OBJLoader, STLExporter, THREE, loadTemplate, templateCache, footModel, fitFor, buildStl, state, objToGeo, currentSpec, fittingFor, productObject, scanModel, renderStaff, applyAligned, objToGeo, manualFoot, dualFor, dualPrint, build3mfFor, bodyStls, shoeData, startDesign, R, show: id => show(id), renderDesign };
+window.__fixiFit = { alignScan, rasterizePlantar, deriveModel, buildContactSole, morphTemplate, toPrintable, fitCheck, buildFoot, STLLoader, OBJLoader, PLYLoader, STLExporter, THREE, loadTemplate, templateCache, footModel, fitFor, buildStl, state, objToGeo, currentSpec, fittingFor, productObject, scanModel, renderStaff, applyAligned, objToGeo, manualFoot, dualFor, dualPrint, build3mfFor, bodyStls, shoeData, startDesign, R, show: id => show(id), renderDesign, ingestScan, loadScanFile, decimateGeometry, triangleCount, downloadBlob, isIOS, isStandalone, SCAN_ACCEPT, MAX_TRIS, Cloud, Viewers, resizeAllViewers };
 seedCRM();
 // v5 cloud init: no keys in config.js -> offline mode (PIN + on-device CRM); v10: PIN only when the cloud is unreachable
+function showAuthNote(html, showBtn) {
+  const n = $('#authNote'); if (!n) return; if (!html) { n.classList.add('hidden'); n.innerHTML = ''; return; }
+  n.classList.remove('hidden'); n.innerHTML = html + (showBtn ? ' <button class="btn ghost" id="authNoteBtn" style="margin:8px 0 0;width:auto;display:inline-flex;min-height:44px;padding:8px 14px">Sign in again</button>' : '');
+  $('#authNoteBtn') && ($('#authNoteBtn').onclick = () => askPin());
+}
+const standaloneHint = () => isStandalone() ? ' This Home Screen app keeps its own login, separate from Safari.' : '';
 if (Cloud.configured) initCloud().then(() => {
+  let wantStaff = false; try { wantStaff = localStorage.getItem('fxStaffCloud') === '1' || sessionStorage.getItem('fxStaff') === '1'; } catch (e) { wantStaff = sessionStorage.getItem('fxStaff') === '1'; }
   if (!Cloud.online) { if (state.staff) toast('Cloud unreachable – working offline on this device', 3500); }
-  else if (sessionStorage.getItem('fxStaff') === '1' && Cloud.ready) setStaff(true);
-  onCloudChange(() => { if (state.staff && Cloud.online && !Cloud.ready) setStaff(false); renderBanner(); });
+  else if (Cloud.ready && wantStaff) setStaff(true);
+  else if (wantStaff && !Cloud.session) showAuthNote('<b>You are signed out.</b> Sign in again to open the staff dashboard and your cloud customers.' + standaloneHint(), true);
+  else if (Cloud.ready && !wantStaff) showAuthNote('<b>Signed in as ' + (Cloud.profile?.email || 'staff') + '.</b> Tap Staff view to open the dashboard. Your session stays on this app after you close it.' + standaloneHint(), false);
+  onCloudChange(() => {
+    if (state.staff && Cloud.online && !Cloud.ready) { setStaff(false); showAuthNote('<b>You are signed out.</b> Sign in again to keep working in the staff dashboard.' + standaloneHint(), true); }
+    else if (Cloud.ready) showAuthNote('');
+    renderBanner();
+  });
   renderBanner();
 });
 show(qp.get('demo') && testHooks && qp.get('screen') ? qp.get('screen') : 's-welcome');

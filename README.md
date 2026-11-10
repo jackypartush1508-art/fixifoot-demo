@@ -11,6 +11,7 @@ Static web app (no build step). Serve the folder and open on a phone:
 - rules.js     – EDIT ME: arch types, 21 foot problems -> insole changes, questionnaire, friendly wording, products, example prices
 - geometry.js  – procedural foot, insole/sole/flip-flop/slide geometry, printable STL builder, template adaptation
 - receipt.js   – v10 PDF receipt (jsPDF, vendored in vendor/jspdf.umd.min.js; DejaVu Sans subset in vendor/fonts/receipt-fonts.js)
+- scanio.js    – v14 iPad scan upload (STL/OBJ/PLY/ZIP, downsample)
 - footwear.js  – v13 sandal straps, clog upper + heel strap, bed fit / print-time estimate
 - engrave.js   – v9 initials engraving as real geometry (manifold-3d booleans, lazy-loaded)
 - vendor/      – three.js r160 (vendored, works offline); manifold/ (manifold-3d 3.5.4, Apache-2.0); fonts/fx-font.js (Helvetiker Bold subset)
@@ -441,3 +442,13 @@ New hero photos (no logos / brand marks). Geometry updated to match:
 - **Contour Two-Strap**: chunky one-piece-look sole with a raised rim (5 mm, outside the scanned footprint only), pronounced 6 mm toe grip ridge, 18+ mm heel cup, light tread (1.2 mm chevron grooves in the bottom face, bridged by the first layers). Each strap now carries a molded rectangular buckle (frame + centre bar) and a strap-tail relief – same part, printed on edge, no supports. Sole side allowance 6 mm (rim width).
 - **Comfort Clog**: ~13 round Ø11 mm top vents in staggered rows + 2 elongated side vents (15×5.5 mm) per side just above the sole line, all real through-holes; smoother rounded toe box (40 mm nose rounding, ripple-free roof); light tread; swing heel strap on round rivets (Ø16 raised disc + pin), shown swung down round the heel (the strap itself is flat and printed on edge).
 - Bed limits unchanged: K1C fits ≤ 250 mm foot with 5 mm margin, ≤ 255 mm with 2 mm.
+
+
+## v14 – iPad-ready (Safari + Home Screen)
+The web app is the scanning/design tool on iPad (no native scanning app). Staff scan with 3d Scanner App, Polycam or Heges, export STL/OBJ/PLY to the Files app, then upload here.
+- `scanio.js`: iOS-friendly file picker (`accept` includes `*/*` so Files is not greyed out), type detection by extension and contents, ZIP of an OBJ, mesh downsample above 500k triangles, progress, 80 MB cap.
+- Downloads (STL / 3MF / PDF / CSV / XLSX): blob + `<a download>`, then the iOS share sheet (`navigator.share` with a File) in Home Screen mode, or a new tab as a last resort.
+- Layout: 768–1366 px portrait and landscape. Landscape uses two columns for the designer and for staff CRM (list + customer card). 44 px touch targets, safe-area insets, `touch-action: none` on the 3D canvas, renderer resizes on rotate. Manifest `orientation` is `any`.
+- iPad memory: pixel ratio capped at 1.5, geometries disposed, WebGL context-loss message, large scans simplified before fitting.
+- Auth in the Home Screen app: Supabase session is in `localStorage` (`persistSession`, auto-refresh). Staff mode is restored after close/reopen. A banner explains “signed out” (Home Screen storage is separate from Safari). The service worker never caches auth/API responses (cross-origin) and uses `cache: no-store` for HTML.
+- Staff checklist: `IPAD_TEST.md`.

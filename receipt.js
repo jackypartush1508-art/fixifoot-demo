@@ -147,11 +147,31 @@ export async function buildFittingPdf(d) {
   const safe = String(d.customer?.name || 'customer').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'customer';
   return { blob: doc.output('blob'), name: `Fixifoot-fitting-report-${safe}.pdf` };
 }
-export function downloadBlob(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000); }
+// v14: iPad Safari and Home Screen (standalone) often ignore <a download>. Prefer the share sheet when it can take a File; otherwise trigger a download, and fall back to opening the file in a new tab.
+export const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+export const isStandalone = () => !!(window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches);
+export async function downloadBlob(blob, name, mime) {
+  const type = mime || blob.type || 'application/octet-stream';
+  const file = new File([blob], name, { type });
+  const shareOk = typeof navigator.canShare === 'function' && (() => { try { return navigator.canShare({ files: [file] }); } catch { return false; } })();
+  // In standalone (Home Screen) the share sheet is the reliable way to save to the Files app.
+  if ((isStandalone() || isIOS()) && shareOk) {
+    try { await navigator.share({ files: [file], title: name, text: name }); return 'shared'; }
+    catch (e) { if (e.name === 'AbortError') return 'cancelled'; }
+  }
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a'); a.href = url; a.download = name; a.rel = 'noopener'; a.style.display = 'none';
+    document.body.appendChild(a); a.click(); a.remove();
+    // If the browser ignored download (older iOS), open in a new tab so the user can use Share → Save to Files.
+    if (isIOS() && !shareOk) { const w = window.open(url, '_blank'); if (!w) { /* popup blocked – keep the object URL a moment */ } }
+    return 'downloaded';
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 20000); }
+}
 export async function shareBlob(blob, name, title) {
-  const file = new File([blob], name, { type: 'application/pdf' });
+  const file = new File([blob], name, { type: blob.type || 'application/pdf' });
   if (navigator.canShare?.({ files: [file] })) { try { await navigator.share({ files: [file], title, text: title }); return 'shared'; } catch (e) { if (e.name === 'AbortError') return 'cancelled'; } }
-  downloadBlob(blob, name); return 'downloaded';
+  return downloadBlob(blob, name);
 }
 export function printBlob(blob) {
   const url = URL.createObjectURL(blob);
