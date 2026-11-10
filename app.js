@@ -974,17 +974,18 @@ function setStaff(on) {
   state.staff = on; document.body.classList.toggle('staff', on); sessionStorage.setItem('fxStaff', on ? '1' : '0');
   try { if (on && Cloud.ready) localStorage.setItem('fxStaffCloud', '1'); else if (!on) localStorage.setItem('fxStaffCloud', '0'); } catch (e) {}
   syncTestMode();
-  if (on) { toast('Staff view on'); show('s-staff'); }
+  if (on) { $('#sheet').classList.add('hidden'); toast('Staff view on'); show('s-staff'); }
   else { toast('Customer view'); if ($('#s-staff').classList.contains('active')) { state.history = state.history.filter(h => h !== 's-staff'); show(state.history[state.history.length - 1] || 's-welcome', false); } else { const act = document.querySelector('.screen.active'); if (act && onEnter[act.id] && !['s-scan'].includes(act.id)) onEnter[act.id](); } }
   renderBanner();
 }
 async function askPin() {
   if (!Cloud.configured) return askPinLocal('Cloud sync is not set up on this device – offline mode. Customers and orders stay on this device.');
+  if (Cloud.session && Cloud.ready) { $('#sheet').classList.add('hidden'); setStaff(true); return; }
   if (navigator.onLine !== false && Cloud.client) { sheet('<h3>🛠 Staff</h3><p class="muted">Connecting to the Fixifoot cloud…</p>'); if (await pingCloud()) return askLogin(); }
   askPinLocal('☁️ The Fixifoot cloud is unreachable right now (no internet?). Offline staff access with the shop PIN: customers and orders are saved on this device and can be uploaded from Customers when the cloud is back.');
 }
 function askLogin() {
-  if (Cloud.session && Cloud.ready) { setStaff(true); return; }
+  if (Cloud.session && Cloud.ready) { $('#sheet').classList.add('hidden'); setStaff(true); return; }
   const inp = 'style="width:100%;font-size:17px;padding:12px;border-radius:12px;border:2px solid #e2e9f1;margin:4px 0"';
   if (Cloud.session && !Cloud.ready) {
     sheet(`<h3>⏳ Waiting for approval</h3><p class="muted">You are signed in as <b>${esc(Cloud.session.user.email)}</b>, but an admin has not approved this staff account yet. Customer data stays hidden until then.</p><button class="btn primary big" id="lgRetry">Check again</button><button class="btn ghost" id="lgOut">Sign out</button>`);

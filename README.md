@@ -452,3 +452,5 @@ The web app is the scanning/design tool on iPad (no native scanning app). Staff 
 - iPad memory: pixel ratio capped at 1.5, geometries disposed, WebGL context-loss message, large scans simplified before fitting.
 - Auth in the Home Screen app: Supabase session is in `localStorage` (`persistSession`, auto-refresh). Staff mode is restored after close/reopen. A banner explains “signed out” (Home Screen storage is separate from Safari). The service worker never caches auth/API responses (cross-origin) and uses `cache: no-store` for HTML.
 - Staff checklist: `IPAD_TEST.md`.
+
+After restoring the paused Supabase project, a leftover **Connecting to the Fixifoot cloud…** sheet could stay open on reload even when the staff session was already restored. `askPin` / `askLogin` / `setStaff` now close that sheet when a ready session exists. Service worker cache: `fixifoot-demo-v14-1`.
